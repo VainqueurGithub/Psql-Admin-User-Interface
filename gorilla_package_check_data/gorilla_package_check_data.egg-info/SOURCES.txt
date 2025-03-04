@@ -1,0 +1,5 @@
+setup.py
+gorilla_package_check_data.egg-info/PKG-INFO
+gorilla_package_check_data.egg-info/SOURCES.txt
+gorilla_package_check_data.egg-info/dependency_links.txt
+gorilla_package_check_data.egg-info/top_level.txt

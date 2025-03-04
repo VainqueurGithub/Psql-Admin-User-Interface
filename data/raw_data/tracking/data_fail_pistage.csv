@@ -1,0 +1,6 @@
+gps,date_carnet,heure_carnet,easting,northing,altitude,espece,signe,type,partie_consommee,nid_arboricoles,nid_terrestres,nombre,foret,age_jours,chef_equipe,equipe,famille_gorille,commentaire
+2,2024-10-17,09:56,566923,9844518,616 m,Riviere,Inonde,,,0,0,1,F.P,0,P001,"Mungazi Gisha, Matunabo Aluta, Mombe Bumani, Nestor Gustave",Odakifa,Olate
+81,2024-11-05,09:24,554972,9851432,592 m,Gorille,Nourriture,Oyatiti,Feuille,0,0,0,F.P,2,P035,"Maliaseme Adjamina, Mbango Batikanyongo, Murhabazi Furien, Journalier Ramazani Abedi",Idumba,
+408,2024-10-30,14:12,553262,9851367,588 m,Atherurus africanus,Vu,,,0,0,3,F.P,0,P031,"Babika Bumani, Malisala Kifukutu, Journaliers Augustin Maliaseme, Valentin Ngoy",Membe,
+448,2024-11-03,13:02,548918,9852788,684 m,Atherurus africanus,Vu,,,0,0,2,F.P,0,P031,"Babika Bumani, Malisala Kifukutu, Journaliers Augustin Maliaseme, Valentin Ngoy",Membe,
+457,2024-11-04,10:58,553653,9850725,612 m,Atherurus africanus,Vu,,,0,0,3,F.P,0,P031,"Babika Bumani, Malisala Kifukutu, Journaliers Augustin Maliaseme, Valentin Ngoy",Membe,

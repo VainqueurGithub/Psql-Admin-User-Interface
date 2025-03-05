@@ -134,11 +134,14 @@ def on_schema_click(event):
             tree_tables.delete(row)
         
         dropdown['menu'].delete(0, 'end') # Clear current options
+        dropdown_report['menu'].delete(0, 'end') # Clear current options
         # Insert new tables
         for table in tables:
             tree_tables.insert("", "end", values=(table,schema_name))
             dropdown['menu'].add_command(label=table, command=tk._setit(var, table))
+            dropdown_report['menu'].add_command(label=table, command=tk._setit(var_report, table))
         var.set(tables[0])
+        var_report.set(tables[0])
 
 def on_table_click(event):
     """Fetch and display the first 1000 records when a table is clicked."""
@@ -447,6 +450,7 @@ tree_tables.place(relx=0.18, rely=0.1,relheight=1)
 tree_tables.bind("<<TreeviewSelect>>", on_table_click)
 
 var = tk.StringVar(root)
+var_report = tk.StringVar(root)
 label_importation = ttk.Label(root, text="Data importation")
 
 # Separator object
@@ -454,7 +458,7 @@ separator = ttk.Separator(root, orient='horizontal')
 separator.place(relx=0.4, rely=0.18, relwidth=1, relheight=1)
 
 label_importation.place(relx=0.4, rely=0.15)
-var.set("Option 1") # Default value
+var.set("Choose table") # Default value
 #options = ["Option 1", "Option 2", "Option 3"]
 dropdown = ttk.OptionMenu(root, var, [])
 dropdown.place(relx=0.4, rely=0.2)
@@ -473,6 +477,14 @@ label_reporting.place(relx=0.4, rely=0.37)
 # Separator object
 separator = ttk.Separator(root, orient='horizontal')
 separator.place(relx=0.4, rely=0.4, relwidth=1, relheight=1)
+
+var_report.set("Choose table") # Default value
+#options = ["Option 1", "Option 2", "Option 3"]
+dropdown_report = ttk.OptionMenu(root, var_report, [])
+dropdown_report.place(relx=0.4, rely=0.45)
+
+button_report = ttk.Button(root, text="Reporting", command=import_data)
+button_report.place(relx=0.5, rely=0.45)
 
 root.mainloop()
 

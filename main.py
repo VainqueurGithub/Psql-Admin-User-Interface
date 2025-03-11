@@ -2,7 +2,6 @@ import csv
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox, filedialog
-import geopandas as gpd
 import pandas as pd
 import matplotlib
 matplotlib.use("TkAgg") # for backend

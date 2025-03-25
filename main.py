@@ -12,6 +12,8 @@ import tkinter as tk
 from tkinter import messagebox
 from gorilla_package_check_data import raw_tracking_data_checking,tr_checking_data_integrity,tr_data_downloading_psql,tr_read_csv,tr_create_engine,tr_connect_to_db,tr_retrieve_data_psql
 from gorilla_package_check_data import raw_monitoring_data_checking,mon_checking_data_integrity,mon_data_downloading_psql,mon_read_csv,mon_create_engine,mon_connect_to_db,mon_retrieve_data_psql
+from gorilla_package_check_data import raw_delimitation_data_checking,del_checking_data_integrity,del_data_downloading_psql,del_read_csv,del_create_engine,del_connect_to_db,del_retrieve_data_psql
+from gorilla_package_check_data import raw_nesting_data_checking,nest_checking_data_integrity,nest_data_downloading_psql,nest_read_csv,nest_create_engine,nest_connect_to_db,nest_retrieve_data_psql
 import csv
 import psycopg2
 import pandas as pd
@@ -326,6 +328,8 @@ def import_data():
             source_checked = source_checked[0]+"checked_data/tracking" # data source where csv file containing gorilla monitoring checked data is stored
         elif var.get()=='surveillance':
             source_checked = source_checked[0]+"checked_data/monitoring"
+        elif var.get()=='delimitation':
+            source_checked = source_checked[0]+"checked_data/delimitation"
         # Open the file and read the first line to detect the delimiter
         with open(source_raw, "r") as csvfile:
             # Read the file's content
@@ -350,6 +354,11 @@ def import_data():
             data =raw_monitoring_data_checking(data)
             df_espece, df_signe, df_nombre, df_equipe, df_age, df_chef_equipe = mon_retrieve_data_psql(database_entry.get(),user_entry.get(),password_entry.get(),host_entry.get(),5432)
             mon_checking_data_integrity(source_raw,source_checked,df_espece, df_signe, df_nombre, df_equipe, df_age, df_chef_equipe,data)
+
+        elif var.get()=='delimitation':
+            data =raw_delimitation_data_checking(data)
+            df_espece, df_signe, df_nombre, df_equipe, df_age, df_chef_equipe = del_retrieve_data_psql(database_entry.get(),user_entry.get(),password_entry.get(),host_entry.get(),5432)
+            del_checking_data_integrity(source_raw,source_checked,df_espece, df_signe, df_nombre, df_equipe, df_age, df_chef_equipe,data)
 
         file_paths = [os.path.join(source_checked, f) for f in os.listdir(source_checked) if os.path.isfile(os.path.join(source_checked,f))]
 
@@ -379,6 +388,8 @@ def on_list_double_click(event):
                 tr_data_downloading_psql(file_path, user_entry.get(),password_entry.get(),host_entry.get(),'5432',database_entry.get())
             elif var.get()=='surveillance':
                 mon_data_downloading_psql(file_path, user_entry.get(),password_entry.get(),host_entry.get(),'5432',database_entry.get())
+            elif var.get()=='delimitation':
+                del_data_downloading_psql(file_path, user_entry.get(),password_entry.get(),host_entry.get(),'5432',database_entry.get())
 # root window
 root = tk.Tk()
 root.geometry("1600x820")

@@ -348,8 +348,8 @@ def import_data():
 
         if var.get()=='pistage':
             data =raw_tracking_data_checking(data)
-            df_espece, df_signe, df_nombre, df_foret, df_age, df_chef_equipe, df_type, df_partie_consomme, df_famille_gorille = tr_retrieve_data_psql(database_entry.get(),user_entry.get(),password_entry.get(),host_entry.get(),5432)
-            tr_checking_data_integrity(source_raw,source_checked,df_espece,df_signe,df_nombre,df_foret,df_age,df_chef_equipe,df_type,df_partie_consomme,df_famille_gorille,data)
+            df_espece, df_signe, df_nombre, df_foret, df_age, df_chef_equipe, df_type, df_partie_consomme, df_famille_gorille, df_plante_consommee = tr_retrieve_data_psql(database_entry.get(),user_entry.get(),password_entry.get(),host_entry.get(),5432)
+            tr_checking_data_integrity(source_raw,source_checked,df_espece,df_signe,df_nombre,df_foret,df_age,df_chef_equipe,df_type,df_partie_consomme,df_famille_gorille,df_plante_consommee,data)
         elif var.get()=='surveillance':
             data =raw_monitoring_data_checking(data)
             df_espece, df_signe, df_nombre, df_equipe, df_age, df_chef_equipe = mon_retrieve_data_psql(database_entry.get(),user_entry.get(),password_entry.get(),host_entry.get(),5432)

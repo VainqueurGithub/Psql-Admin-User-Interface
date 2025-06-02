@@ -7,12 +7,15 @@ import pandas as pd
 import numpy as np
 import os
 from tkinter import messagebox
+from urllib.parse import quote_plus
 
 
 def tr_create_engine(database,user,password,host,port):
     try:
         # Attempt to connect to the database
-        engine = create_engine('postgresql+psycopg2://'+user+':'+password+'@'+host+':'+port+'/'+database)
+        encoded_password = quote_plus(password)
+        encoded_user = quote_plus(user)
+        engine = create_engine(f'postgresql+psycopg2://{encoded_user}:{encoded_password}@{host}:{port}/{database}')
         return engine
     except OperationalError as e:
         # Handle connection failure
@@ -119,6 +122,7 @@ def tr_retrieve_data_psql(database,user,password,host,port):
         cursor_espece = conn.cursor()
         cursor_signe = conn.cursor()
         cursor_type = conn.cursor()
+        cursor_plante_consommee = conn.cursor()
         cursor_partie_consomme = conn.cursor()
         cursor_nombre = conn.cursor()
         cursor_foret = conn.cursor()
@@ -127,7 +131,7 @@ def tr_retrieve_data_psql(database,user,password,host,port):
         cursor_famille_gorille = conn.cursor()
     
         #Retrieving data
-        cursor_espece.execute('''SELECT nom_espece from prog_gorille.espece''')
+        cursor_espece.execute('''SELECT nom_espece from prog_gorille.observation''')
         cursor_signe.execute('''SELECT valeur from prog_gorille.signes''')
         cursor_type.execute('''SELECT valeur from prog_gorille.type''')
         cursor_partie_consomme.execute('''SELECT valeur from prog_gorille.partie_consommee''')
@@ -136,6 +140,7 @@ def tr_retrieve_data_psql(database,user,password,host,port):
         cursor_age.execute('''SELECT valeur from prog_gorille.age''')
         cursor_chef_equipe.execute('''SELECT num_pisteur from prog_gorille.pisteur''')
         cursor_famille_gorille.execute('''SELECT nom_famille from prog_gorille.famille_gorille''')
+        cursor_plante_consommee.execute('''SELECT nom_espece from prog_biodiversite.espece_arbre''')
     
         #Fetching rows from the table
         especes = cursor_espece.fetchall();
@@ -147,6 +152,7 @@ def tr_retrieve_data_psql(database,user,password,host,port):
         ages = cursor_age.fetchall();
         chef_equipes = cursor_chef_equipe.fetchall();
         famille_gorilles = cursor_famille_gorille.fetchall();
+        plante_consommees = cursor_plante_consommee.fetchall(); 
     
         #Commit your changes in the database
         conn.commit()
@@ -179,8 +185,12 @@ def tr_retrieve_data_psql(database,user,password,host,port):
 
         df_chef_equipe = pd.DataFrame(chef_equipes, columns=['chef_equipe'])
         df_famille_gorille = pd.DataFrame(famille_gorilles, columns=['famille_gorille'])
+
+        df_plante_consommee = pd.DataFrame(plante_consommees, columns=['nom_espece'])
+        df_plante_consommee2 = pd.DataFrame([[np.nan]], columns=['nom_espece'])
+        df_plante_consommee = pd.concat([df_plante_consommee,df_plante_consommee2], ignore_index=True)
     
-        return df_espece, df_signe, df_nombre, df_foret, df_age, df_chef_equipe, df_type, df_partie_consomme, df_famille_gorille
+        return df_espece, df_signe, df_nombre, df_foret, df_age, df_chef_equipe, df_type, df_partie_consomme, df_famille_gorille, df_plante_consommee
     
     except AttributeError:
         df_espece = pd.DataFrame(columns=['espece'])
@@ -192,11 +202,12 @@ def tr_retrieve_data_psql(database,user,password,host,port):
         df_type = pd.DataFrame(columns=['type'])
         df_partie_consomme = pd.DataFrame(columns=['partie_consomme']) 
         df_famille_gorille = pd.DataFrame(columns=['famille_gorille'])
+        df_plante_consommee = pd.DataFrame(columns=['plante_consomee'])
         
-        return df_espece, df_signe, df_nombre, df_foret, df_age, df_chef_equipe, df_type, df_partie_consomme, df_famille_gorille
+        return df_espece, df_signe, df_nombre, df_foret, df_age, df_chef_equipe, df_type, df_partie_consomme, df_famille_gorille, df_plante_consommee
 
 
-def tr_checking_data_integrity(source_raw,source_checked,df_espece,df_signe,df_nombre,df_foret,df_age,df_chef_equipe,df_type,df_partie_consomme,df_famille_gorille,data):
+def tr_checking_data_integrity(source_raw,source_checked,df_espece,df_signe,df_nombre,df_foret,df_age,df_chef_equipe,df_type,df_partie_consomme,df_famille_gorille,df_plante_consommee,data):
     ''' This function check data integrity before downloading the data into psql.'''
     
     data_success = data.loc[(data['espece'].isin(df_espece['espece'])) & (data['signe'].isin(df_signe['signe'])) &
@@ -204,7 +215,7 @@ def tr_checking_data_integrity(source_raw,source_checked,df_espece,df_signe,df_n
          (data['foret'].isin(df_foret['foret'])) &(data['age_jours'].isin(df_age['age'])) & 
          (data['chef_equipe'].isin(df_chef_equipe['chef_equipe'])) &
          (data['famille_gorille'].isin(df_famille_gorille['famille_gorille'])) & 
-                        (data['nombre'].isin(df_nombre['nombre']))]
+                        (data['nombre'].isin(df_nombre['nombre'])) & (data['plante_consomee'].isin(df_plante_consommee['nom_espece']))]
     data_success
     
     
@@ -214,7 +225,7 @@ def tr_checking_data_integrity(source_raw,source_checked,df_espece,df_signe,df_n
          (~data['foret'].isin(df_foret['foret'])) | (~data['age_jours'].isin(df_age['age'])) | 
          (~data['chef_equipe'].isin(df_chef_equipe['chef_equipe'])) |
          (~data['famille_gorille'].isin(df_famille_gorille['famille_gorille'])) |
-                    (~data['nombre'].isin(df_nombre['nombre']))]
+                    (~data['nombre'].isin(df_nombre['nombre'])) | (~data['plante_consomee'].isin(df_plante_consommee['nom_espece']))]
     data_fail
 
     

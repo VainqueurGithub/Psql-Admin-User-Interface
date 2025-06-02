@@ -6,11 +6,14 @@ import pandas as pd
 import numpy as np
 import os
 from tkinter import messagebox
+from urllib.parse import quote_plus
 
 def mon_create_engine(database,user,password,host,port):
     try:
         # Attempt to connect to the database
-        engine = create_engine('postgresql+psycopg2://'+user+':'+password+'@'+host+':'+port+'/'+database)
+        encoded_password = quote_plus(password)
+        encoded_user = quote_plus(user)
+        engine = create_engine(f'postgresql+psycopg2://{encoded_user}:{encoded_password}@{host}:{port}/{database}')
         return engine
     except OperationalError as e:
         # Handle connection failure
@@ -106,7 +109,7 @@ def mon_retrieve_data_psql(database,user,password,host,port):
         cursor_chef_equipe = conn.cursor()
     
         #Retrieving data
-        cursor_espece.execute('''SELECT nom_espece from prog_gorille.espece''')
+        cursor_espece.execute('''SELECT nom_espece from prog_gorille.observation''')
         cursor_signe.execute('''SELECT valeur from prog_gorille.signes''')
         cursor_equipe.execute('''SELECT nom_equipe from prog_gorille.equipe_surveillance''')
         cursor_nombre.execute('''SELECT valeur from prog_gorille.nombre''')

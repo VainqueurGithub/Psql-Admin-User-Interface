@@ -93,11 +93,11 @@ def raw_tracking_data_checking(data):
             data['nid_terrestres']=data['nid_terrestres'].astype(int)
             try:
                 data['nombre'] = data['nombre'].fillna(0)
-                data['nombre'] = data['nombre'].astype(int)
+                #data['nombre'] = data['nombre'].astype(int)
                 data['nombre'] = data['nombre'].astype(str)
                 try:
                     data['age_jours'] = data['age_jours'].fillna(0)
-                    data['age_jours'] = data['age_jours'].astype(int)
+                    #data['age_jours'] = data['age_jours'].astype(int)
                     data['age_jours'] = data['age_jours'].astype(str)
                     messagebox.showinfo("nombre Converted succeffully")
                 except ValueError:

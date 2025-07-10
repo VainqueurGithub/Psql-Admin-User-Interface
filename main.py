@@ -330,6 +330,8 @@ def import_data():
             source_checked = source_checked[0]+"checked_data/monitoring"
         elif var.get()=='delimitation':
             source_checked = source_checked[0]+"checked_data/delimitation"
+        elif var.get()=='nidification':
+            source_checked = source_checked[0]+"checked_data/nidification"
         # Open the file and read the first line to detect the delimiter
         with open(source_raw, "r") as csvfile:
             # Read the file's content
@@ -359,6 +361,11 @@ def import_data():
             data =raw_delimitation_data_checking(data)
             df_espece, df_signe, df_nombre, df_equipe, df_age, df_chef_equipe = del_retrieve_data_psql(database_entry.get(),user_entry.get(),password_entry.get(),host_entry.get(),5432)
             del_checking_data_integrity(source_raw,source_checked,df_espece, df_signe, df_nombre, df_equipe, df_age, df_chef_equipe,data)
+
+        elif var.get()=='nidification':
+            data =raw_nesting_data_checking(data)
+            df_sexe_age, df_nid_id, df_habitat, df_type_nid, df_category_materiel, df_famille_gorille, df_espece_materiaux, df_espece_consommee, df_espece_arbre = nest_retrieve_data_psql(database_entry.get(),user_entry.get(),password_entry.get(),host_entry.get(),5432)
+            nest_checking_data_integrity(source_raw,source_checked,df_sexe_age,df_nid_id,df_habitat,df_type_nid,df_category_materiel,df_famille_gorille,df_espece_materiaux,df_espece_consommee,df_espece_arbre,data)
 
         file_paths = [os.path.join(source_checked, f) for f in os.listdir(source_checked) if os.path.isfile(os.path.join(source_checked,f))]
 
@@ -390,6 +397,8 @@ def on_list_double_click(event):
                 mon_data_downloading_psql(file_path, user_entry.get(),password_entry.get(),host_entry.get(),'5432',database_entry.get())
             elif var.get()=='delimitation':
                 del_data_downloading_psql(file_path, user_entry.get(),password_entry.get(),host_entry.get(),'5432',database_entry.get())
+            elif var.get()=='nidification':
+                nest_data_downloading_psql(file_path, user_entry.get(),password_entry.get(),host_entry.get(),'5432',database_entry.get())
 # root window
 root = tk.Tk()
 root.geometry("1600x820")

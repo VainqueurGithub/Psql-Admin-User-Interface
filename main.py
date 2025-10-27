@@ -331,7 +331,7 @@ def import_data():
         elif var.get()=='delimitation':
             source_checked = source_checked[0]+"checked_data/delimitation"
         elif var.get()=='nidification':
-            source_checked = source_checked[0]+"checked_data/nidification"
+            source_checked = source_checked[0]+"checked_data/nesting"
         # Open the file and read the first line to detect the delimiter
         with open(source_raw, "r") as csvfile:
             # Read the file's content

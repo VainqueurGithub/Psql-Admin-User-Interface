@@ -163,7 +163,7 @@ def nest_retrieve_data_psql(database,user,password,host,port):
         espece_materiaux.execute('''SELECT nom_espece from prog_biodiversite.espece_arbre''')
         espece_consommee.execute('''SELECT nom_espece from prog_biodiversite.espece_arbre''')
         espece_arbre.execute('''SELECT nom_espece from prog_biodiversite.espece_arbre''')
-    
+        
         #Fetching rows from the table
         sexe_ages = cursor_sexe_age.fetchall();
         nid_ids = cursor_nid_id.fetchall();
@@ -181,59 +181,67 @@ def nest_retrieve_data_psql(database,user,password,host,port):
     
         #Creating single dataframe for each cursor, and add nan value if neccessary
         df_sexe_age = pd.DataFrame(sexe_ages, columns=['sexe_age'])
-        df_nid_id = pd.DataFrame(nid_ids, columns=['nid'])
+        df_nid_id = pd.DataFrame(nid_ids, columns=['id_nid'])
         df_habitat = pd.DataFrame(habitats, columns=['habitat'])
         df_type_nid = pd.DataFrame(type_nids, columns=['type_nid'])
-        df_category_materiel = pd.DataFrame(category_materiels, columns=['category_materiel'])
+        df_category_materiel = pd.DataFrame(category_materiels, columns=['categorie_materiel'])
         df_famille_gorille = pd.DataFrame(famille_gorilles, columns=['famille_gorille'])
-        df_espece_materiaux = pd.DataFrame(espece_materiels, columns=['escepe_materiaux'])
-        df_espece_materiaux2 = pd.DataFrame([[np.nan]], columns=['escepe_materiaux'])
+        df_espece_materiaux = pd.DataFrame(espece_materiels, columns=['espece_materiaux'])
+        df_espece_materiaux2 = pd.DataFrame([[np.nan]], columns=['espece_materiaux'])
         df_espece_materiaux = pd.concat([df_espece_materiaux,df_espece_materiaux2], ignore_index=True)
 
-        df_espece_consommee = pd.DataFrame(espece_consommees, columns=['escepe_consommee'])
-        df_espece_consommee2 = pd.DataFrame([[np.nan]], columns=['escepe_consommee'])
+        df_espece_consommee = pd.DataFrame(espece_consommees, columns=['espece_consommee'])
+        df_espece_consommee2 = pd.DataFrame([[np.nan]], columns=['espece_consommee'])
         df_espece_consommee = pd.concat([df_espece_consommee,df_espece_consommee2], ignore_index=True)
 
-        df_espece_arbre = pd.DataFrame(espece_arbres, columns=['escepe_arbre'])
-        df_espece_arbre2 = pd.DataFrame([[np.nan]], columns=['escepe_arbre'])
+        df_espece_arbre = pd.DataFrame(espece_arbres, columns=['espece_arbre'])
+        df_espece_arbre2 = pd.DataFrame([[np.nan]], columns=['espece_arbre'])
         df_espece_arbre = pd.concat([df_espece_arbre,df_espece_arbre2], ignore_index=True)
     
         return df_sexe_age, df_nid_id, df_habitat, df_type_nid, df_category_materiel, df_famille_gorille, df_espece_materiaux, df_espece_consommee, df_espece_arbre
     except AttributeError:
         df_sexe_age = pd.DataFrame(columns=['sexe_age'])
-        df_nid_id = pd.DataFrame(columns=['nid_id'])
+        df_nid_id = pd.DataFrame(columns=['id_nid'])
         df_habitat = pd.DataFrame(columns=['habitat'])
         df_type_nid = pd.DataFrame(columns=['type_nid'])
-        df_category_materiel = pd.DataFrame(columns=['category_materiel'])
+        df_category_materiel = pd.DataFrame(columns=['categorie_materiel'])
         df_famille_gorille = pd.DataFrame(columns=['famille_gorille'])
         df_espece_materiaux = pd.DataFrame(columns=['espece_materiaux'])
         df_espece_consommee = pd.DataFrame(columns=['espece_consommee'])
         df_espece_arbre = pd.DataFrame(columns=['espece_arbre'])
         return df_sexe_age, df_nid_id, df_habitat, df_type_nid, df_category_materiel, df_famille_gorille, df_espece_materiaux, df_espece_consommee, df_espece_arbre
 
+# 3. Fonction pour vérifier si toutes les espèces d'une cellule sont connues
+def verifier_colonne(cellule, database,user,password,host,port):
+    # 2. Liste de référence des espèces connues
+    df_sexe_age, df_nid_id, df_habitat, df_type_nid, df_category_materiel, df_famille_gorille, df_espece_materiaux, df_espece_consommee, df_espece_arbre= nest_retrieve_data_psql(database,user,password,host,port)
+    especes_connues = set(df_espece_arbre['espece_arbre'].dropna().str.strip())
+    if pd.isna(cellule):
+        return True  # on accepte vide comme "aucune espèce"
+    especes = [e.strip() for e in cellule.split(',')]
+    return all(e in especes_connues for e in especes)
 
 def nest_checking_data_integrity(source_raw,source_checked,df_sexe_age,df_nid_id,df_habitat,df_type_nid,df_category_materiel,df_famille_gorille,df_espece_materiaux,df_espece_consommee,df_espece_arbre,data):
     ''' This function check data integrity before downloading the data into psql.'''
     
-    data_success = data.loc[(data['sexe_age'].isin(df_sexe_age['sexe_age'])) & (data['nid_id'].isin(df_nid_id['nid_id'])) &
+    data_success = data.loc[(data['sexe_age'].isin(df_sexe_age['sexe_age'])) & (data['id_nid'].isin(df_nid_id['id_nid'])) &
         (data['habitat'].isin(df_habitat['habitat'])) & (data['type_nid'].isin(df_type_nid['type_nid'])) & 
-         (data['category_materiel'].isin(df_category_materiel['category_materiel'])) &
-         (data['famille_gorille'].isin(df_famille_gorille['famille_gorille'])) & 
-         (data['espece_materiaux'].isin(df_espece_materiaux['espece_materiaux'])) &
-         (data['espece_consommee'].isin(df_espece_consommee['espece_consommee'])) &
-         (data['espece_arbre'].isin(df_espece_arbre['espece_arbre']))]
+         (data['categorie_materiel'].isin(df_category_materiel['categorie_materiel'])) &
+         (data['famille_gorille'].isin(df_famille_gorille['famille_gorille'])) #& 
+         #(data['espece_materiaux'].isin(df_espece_materiaux['espece_materiaux'])) &
+         #(data['espece_consommee'].isin(df_espece_consommee['espece_consommee'])) &
+         #(data['espece_arbre'].isin(df_espece_arbre['espece_arbre']))
+         ]
     data_success
-    
-    
-    
-    data_fail = data.loc[(~data['sexe_age'].isin(df_sexe_age['sexe_age'])) | (~data['nid_id'].isin(df_nid_id['nid_id'])) |
-        (~data['habitat'].isin(df_habitat['habitat'])) | (~data['type_nid'].isin(df_type_nid['type_nid'])) | 
-         (~data['category_materiel'].isin(df_category_materiel['category_materiel'])) | 
-         (~data['famille_gorille'].isin(df_famille_gorille['famille_gorille'])) |
-         (data['espece_materiaux'].isin(df_espece_materiaux['espece_materiaux'])) |
-         (data['espece_consommee'].isin(df_espece_consommee['espece_consommee'])) |
-         (data['espece_arbre'].isin(df_espece_arbre['espece_arbre']))]
 
+    data_fail = data.loc[(~data['sexe_age'].isin(df_sexe_age['sexe_age'])) | (~data['id_nid'].isin(df_nid_id['id_nid'])) |
+        (~data['habitat'].isin(df_habitat['habitat'])) | (~data['type_nid'].isin(df_type_nid['type_nid'])) | 
+         (~data['categorie_materiel'].isin(df_category_materiel['categorie_materiel'])) | 
+         (~data['famille_gorille'].isin(df_famille_gorille['famille_gorille'])) #|
+         #(data['espece_materiaux'].isin(df_espece_materiaux['espece_materiaux'])) |
+         #(data['espece_consommee'].isin(df_espece_consommee['espece_consommee'])) |
+         #(data['espece_arbre'].isin(df_espece_arbre['espece_arbre']))
+         ]
     
     # Check if the data_success_surveillance CSV file exists
     if os.path.exists(source_checked+'/data_success_nesting.csv'):

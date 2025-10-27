@@ -1,0 +1,9 @@
+date_carnet,fermeture_canopee_silverback,fermeture_canopee_alpha,pente,presence_cours_eau,lat,lon,alt,angle_nid_silverback,distance_nid_silverback,diametre_nid_terrestre_cm,diametre_crotte_cm,deux_arbre,hauteur_nid,hauteur_arbre1,circonference_arbre1,hauteur_arbre2,circonference_arbre2,habitat,sexe_age,id_nid,type_nid,categorie_materiel,famille_gorille,commentaire,espece_materiaux,espece_arbre,pluie_veuille,espece_consommee
+2/22/2023,6,5,8,True,2759511,138312,647,231,730,,,0,6,8,44,,,F.P,,14,Arboricole,Ligneux,Odakifa,,RA,Pancovia harmosiana,,
+2/21/2023,8,7.7,4.5,False,2755365,137929,639,180,1692,,,0,7,9,16,,,F.S.M,,24,Arboricole,Ligneux,Odakifa,,RA,RA,,
+2/21/2023,8,7.7,4.5,False,2755365,137929,639,138,1140,,,0,3,10,47,,,F.S.M,,21,Arboricole,Ligneux,Odakifa,,RA,RA,,
+2/19/2023,15,13,3,False,2755322,137628,660,3,812,,5.1,0,3.3,5,27.4,,,F.S.M,,13,Arboricole,Ligneux,Odakifa,,RA,Grewia mildbraedii ,,
+2/19/2023,15,13,3,False,2755322,137628,660,344,513,,3.2,0,6,7,25,,,F.S.M,,12,Arboricole,Ligneux,Odakifa,,RA,Grewia mildbraedii ,,
+2/19/2023,15,13,3,False,2755322,137628,660,20,650,,5.2,1,4,4,34,4,36,F.S.M,,11,Arboricole,Ligneux,Odakifa,,RA,"Grewia mildbraedii , Pancovia harmsiana ",,
+2/19/2023,15,13,3,False,2755322,137628,660,54,384,,,0,3.2,4,34,,,F.S.M,,10,Arboricole,Ligneux,Odakifa,,RA,Grewia mildbraedii ,,
+2/19/2023,15,13,3,False,2755322,137628,660,26,890,,4.5,0,3,4,34,,,F.S.M,,14,Arboricole,Ligneux,Odakifa,,RA,Grewia mildbraedii ,,

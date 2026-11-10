@@ -23,11 +23,11 @@ LOGO_PATH = os.path.join(LOGO_PATH, "logo_dfgf.png")
 PHOTO_FOLDER = os.path.join(BASE_DIR, "media/employee_photos")
 GORILLA_BG_PATH = os.path.join(BASE_DIR, "media/gorilla.jpg")
 DB_CONFIG = {
-    "host": "dianfossey-do-user-35965399-0.j.db.ondigitalocean.com",
-    "database": "dianfossey",
-    "user": "consult",
-    "password": "dfgf@consult",
-    "port": "25060"
+    "host": "",
+    "database": "",
+    "user": "",
+    "password": "",
+    "port": ""
 }
 
 

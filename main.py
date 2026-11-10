@@ -18,6 +18,11 @@ import csv
 import psycopg2
 import pandas as pd
 import os
+import qrcode
+from io import BytesIO
+from reportlab.pdfgen import canvas
+from reportlab.lib.units import mm
+from reportlab.lib import colors
 
 # Database connection details
 def connect_db():
@@ -27,7 +32,7 @@ def connect_db():
     "user": user_entry.get(),
     "password": password_entry.get(),
     "host": host_entry.get(),
-    "port": "5432"
+    "port": "25060"
     }
 
     try:
@@ -152,8 +157,225 @@ def on_table_click(event):
 
         if len(values) == 2:
             schema_name, table_name = values
-            open_table_record_window(table_name,schema_name)
+            if schema_name == "employe":
+                open_employe_management_window(table_name,schema_name)
+            else:
+                open_table_record_window(table_name,schema_name)
 
+def open_employe_management_window(table_name,schema_name):
+    # Open a child window
+    '''table_record_window = tk.Toplevel(root)
+    table_record_window.title(f"Records - {schema_name}")
+    table_record_window.geometry("1400x720")
+
+    col_names, records = fetch_records(table_name,schema_name)
+                
+    # Create a frame for the table records
+    frame = tk.Frame(table_record_window)  
+    frame.pack(fill="both", expand=True)
+    
+    tree_records = ttk.Treeview(frame, columns=col_names, show="headings")
+    
+    # Clear old records
+            
+    for col in col_names:
+        max_width = max(len(col), 10) * 10
+        tree_records.heading(col, text=col)
+        tree_records.column(col, width=max_width, anchor="center", stretch=False)
+    
+    # Scrollbars
+    vsb = ttk.Scrollbar(frame, orient="vertical", command=tree_records.yview)
+    hsb = ttk.Scrollbar(frame, orient="horizontal", command=tree_records.xview)
+    tree_records.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+    
+    vsb.pack(side="right", fill="y")
+    hsb.pack(side="bottom", fill="x")
+    tree_records.pack(expand=True, fill="both")
+    
+                
+    # Insert records
+    for record in records:
+        tree_records.insert("", "end", values=record)
+
+    # Filtering section
+    employe_filter_frame = tk.Frame(table_record_window)
+    employe_filter_frame.pack(fill="x", padx=10, pady=5)
+    
+    tk.Label(employe_filter_frame, text="Filter by Column:").pack(side="left")
+    
+    # Dropdown for column selection
+    column_var = tk.StringVar()
+    column_dropdown = ttk.Combobox(employe_filter_frame, textvariable=column_var, values=col_names, state="readonly")
+    column_dropdown.pack(side="left", padx=5)
+    
+    # Entry field for filter value
+    filter_entry = tk.Entry(employe_filter_frame)
+    filter_entry.pack(side="left", padx=5)'''
+
+    table_record_window = tk.Toplevel(root)
+    title = tk.Label(table_record_window,text="EMPLOYEE SERVICE CARD GENERATOR",font=("Arial", 18, "bold"),fg="#173B5E")
+    table_record_window.geometry("1400x720")
+    title.pack(pady=15)
+
+    # Employee table
+    col_names, records = fetch_records(table_name,schema_name)
+    
+    # Create a frame for the table records
+    frame = tk.Frame(table_record_window)  
+    frame.pack(fill="both", expand=True)
+
+    tree_records = ttk.Treeview(frame, columns=col_names[0:5], show="headings")
+    headings = {"id_personne": "Matricule","nom": "Employee Name","prenom": "Prenom","poste": "Position","departement": "Departement"}
+
+    for col in col_names:
+        tree_records.heading(col, text=headings[col])
+        tree_records.column(col, width=160)
+        tree_records.pack(fill="both",expand=True,padx=20,pady=10)
+
+    #Buttons
+    buttons = tk.Frame(table_record_window)
+    buttons.pack(fill="x", padx=10, pady=5)
+    tk.Label(buttons, text="Filter by Column:").pack(side="left")
+     #employe_filter_frame = tk.Frame(table_record_window)
+        #employe_filter_frame.pack(fill="x", padx=10, pady=5)
+
+    #tk.Button(buttons,text="Refresh Employees",width=20).pack(side="left", padx=5)
+    #tk.Button(buttons,text="Generate Selected Cards",width=23,bg="#173B5E",fg="white").pack(side="left", padx=5)
+    #tk.Button(buttons,text="Generate All Cards",command=table_record_window.generate_all,width=20,bg="#287A50",fg="white").pack(side="left", padx=5)
+    ttk.Button(buttons, text="Refresh Employees",width=20).pack(side="left", padx=5)
+    ttk.Button(buttons, text="Generate Selected Cards",width=23,bg="#173B5E",fg="white").pack(side="left", padx=5)
+    ttk.Button(buttons, text="Generate All Cards",width=20,bg="#287A50",fg="white").pack(side="left", padx=5)
+
+
+   # Load employees from PostgreSQL
+    def load_employees():
+        try:
+            for record in records:
+                tree_records.insert("", "end", values=record)
+        except Exception as e:
+            messagebox.showerror("Database Error",str(e))
+   
+    # Generate selected employee cards
+    def generate_selected():
+   
+        selected = tree_records.tree.selection()
+   
+        if not selected:
+            messagebox.showwarning("Selection","Please select at least one employee.")
+            return
+        employees = [tree_records.tree.item(item)["values"]for item in selected]
+        tree_records.export_pdf(employees)
+   
+    # Generate cards for all employees
+    def generate_all():
+   
+        if not tree_records.employees:
+            messagebox.showwarning("Warning","No employee records found.")
+            return
+   
+        tree_records.export_pdf(tree_records.employees)
+   
+    # Export PDF
+    def export_pdf(self, employees):
+   
+        output_file = filedialog.asksaveasfilename(defaultextension=".pdf",filetypes=[("PDF files", "*.pdf")],initialfile="employee_service_cards.pdf")
+   
+        if not output_file:
+            return
+   
+        try:
+            generate_cards(employees, output_file)
+   
+            messagebox.showinfo("Success",f"{len(employees)} employee cards generated successfully.")
+   
+        except Exception as e:messagebox.showerror("PDF Error",str(e))
+   
+   
+     
+   
+   
+   
+   
+   
+       
+    '''def apply_filter():
+           """Apply filtering based on user input."""
+           selected_col = column_var.get()
+           filter_value = filter_entry.get()
+           col_names, records = fetch_records(table_name,schema_name, selected_col, filter_value)
+       
+           # Clear existing records
+           for row in tree_records.get_children():
+               tree_records.delete(row)
+       
+           # Insert filtered records
+           for record in records:
+               tree_records.insert("", "end", values=record)'''
+   
+   
+    def generate_qr(matricule):
+   
+        qr = qrcode.QRCode(version=None,error_correction=qrcode.constants.ERROR_CORRECT_M,box_size=8,border=2)
+        qr.add_data(f"EMP:{matricule}")
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black",back_color="white").convert("RGB")
+        output = BytesIO()
+        img.save(output, format="PNG")
+        output.seek(0)
+        return output
+   
+   
+    def generate_cards(employees, output_file):
+           
+        # Exact card dimensions: 82 x 50 mm
+        card_width = 82 * mm
+        card_height = 50 * mm
+           
+        pdf = canvas.Canvas(output_file, pagesize=(card_width, card_height))
+   
+        for emp in employees:
+            matricule, name, sex, position, details = emp
+               
+            # Background
+            pdf.setFillColor(colors.white)
+            pdf.rect(0, 0, card_width, card_height, fill=1, stroke=0)
+   
+            # Header
+            pdf.setFillColorRGB(0.09, 0.22, 0.36)
+            pdf.rect(0, 39 * mm,card_width, 11 * mm,fill=1, stroke=0)
+            pdf.setFillColor(colors.white)
+            pdf.setFont("Helvetica-Bold", 9)
+            pdf.drawCentredString(card_width / 2,45 * mm,"ORGANISATION NAME")
+            pdf.setFont("Helvetica", 6.5)
+            pdf.drawCentredString(card_width / 2,41.5 * mm,"EMPLOYEE IDENTIFICATION CARD")
+   
+            # Employee information
+            pdf.setFillColor(colors.black)
+            pdf.setFont("Helvetica-Bold", 9)
+            pdf.drawString(4 * mm,32 * mm,str(name or ""))
+            pdf.setFont("Helvetica", 7)
+            pdf.drawString(4 * mm, 26 * mm,f"Matricule: {matricule}")
+            pdf.drawString(4 * mm, 21 * mm,f"Sex: {sex or ''}")
+            pdf.drawString(4 * mm, 16 * mm,f"Position: {position or ''}")
+   
+            # Additional details
+            if details:
+                pdf.setFont("Helvetica", 6)
+                pdf.drawString(4 * mm, 11 * mm,str(details)[:45])
+   
+            # QR code
+            qr_buffer = generate_qr(matricule)
+            pdf.drawImage(qr_buffer,60 * mm,10 * mm,width=18 * mm, height=18 * mm)
+   
+            # Footer
+            pdf.setStrokeColorRGB(0.09, 0.22, 0.36)
+            pdf.line(4 * mm, 7 * mm, 78 * mm, 7 * mm )
+            pdf.setFont("Helvetica-Bold", 6)
+            pdf.setFillColorRGB(0.09, 0.22, 0.36)
+            pdf.drawCentredString(card_width / 2,3.5 * mm,"OFFICIAL EMPLOYEE SERVICE CARD")
+            pdf.showPage()
+   
+        pdf.save()
 def open_table_record_window(table_name,schema_name):
 
     # Open a child window
@@ -350,21 +572,21 @@ def import_data():
 
         if var.get()=='pistage':
             data =raw_tracking_data_checking(data)
-            df_espece, df_signe, df_nombre, df_foret, df_age, df_chef_equipe, df_type, df_partie_consomme, df_famille_gorille, df_plante_consommee = tr_retrieve_data_psql(database_entry.get(),user_entry.get(),password_entry.get(),host_entry.get(),5432)
+            df_espece, df_signe, df_nombre, df_foret, df_age, df_chef_equipe, df_type, df_partie_consomme, df_famille_gorille, df_plante_consommee = tr_retrieve_data_psql(database_entry.get(),user_entry.get(),password_entry.get(),host_entry.get(),25060)
             tr_checking_data_integrity(source_raw,source_checked,df_espece,df_signe,df_nombre,df_foret,df_age,df_chef_equipe,df_type,df_partie_consomme,df_famille_gorille,df_plante_consommee,data)
         elif var.get()=='surveillance':
             data =raw_monitoring_data_checking(data)
-            df_espece, df_signe, df_nombre, df_equipe, df_age, df_chef_equipe = mon_retrieve_data_psql(database_entry.get(),user_entry.get(),password_entry.get(),host_entry.get(),5432)
+            df_espece, df_signe, df_nombre, df_equipe, df_age, df_chef_equipe = mon_retrieve_data_psql(database_entry.get(),user_entry.get(),password_entry.get(),host_entry.get(),25060)
             mon_checking_data_integrity(source_raw,source_checked,df_espece, df_signe, df_nombre, df_equipe, df_age, df_chef_equipe,data)
 
         elif var.get()=='delimitation':
             data =raw_delimitation_data_checking(data)
-            df_espece, df_signe, df_nombre, df_equipe, df_age, df_chef_equipe = del_retrieve_data_psql(database_entry.get(),user_entry.get(),password_entry.get(),host_entry.get(),5432)
+            df_espece, df_signe, df_nombre, df_equipe, df_age, df_chef_equipe = del_retrieve_data_psql(database_entry.get(),user_entry.get(),password_entry.get(),host_entry.get(),25060)
             del_checking_data_integrity(source_raw,source_checked,df_espece, df_signe, df_nombre, df_equipe, df_age, df_chef_equipe,data)
 
         elif var.get()=='nidification':
             data =raw_nesting_data_checking(data)
-            df_sexe_age, df_nid_id, df_habitat, df_type_nid, df_category_materiel, df_famille_gorille, df_espece_materiaux, df_espece_consommee, df_espece_arbre = nest_retrieve_data_psql(database_entry.get(),user_entry.get(),password_entry.get(),host_entry.get(),5432)
+            df_sexe_age, df_nid_id, df_habitat, df_type_nid, df_category_materiel, df_famille_gorille, df_espece_materiaux, df_espece_consommee, df_espece_arbre = nest_retrieve_data_psql(database_entry.get(),user_entry.get(),password_entry.get(),host_entry.get(),25060)
             nest_checking_data_integrity(source_raw,source_checked,df_sexe_age,df_nid_id,df_habitat,df_type_nid,df_category_materiel,df_famille_gorille,df_espece_materiaux,df_espece_consommee,df_espece_arbre,data)
 
         file_paths = [os.path.join(source_checked, f) for f in os.listdir(source_checked) if os.path.isfile(os.path.join(source_checked,f))]
@@ -425,7 +647,7 @@ user_label.place(relx=0.18, rely=0.03)
 
 user_entry = ttk.Entry(root, width=15)
 user_entry.place(relx=0.21, rely=0.03)
-user_entry.insert(0, 'user')
+user_entry.insert(0, 'doadmin')
 
 
 password_label = ttk.Label(root, text="Password:")
@@ -433,14 +655,14 @@ password_label.place(relx=0.31, rely=0.03)
 
 password_entry = ttk.Entry(root, show='*', width=15)
 password_entry.place(relx=0.37, rely=0.03)
-password_entry.insert(0, 'fgfgfhdhfhjdjd')
+password_entry.insert(0, 'AVNS_6FbX7gmYK9R2B0O_Qgp')
 
 host_label = ttk.Label(root, text="Host:")
 host_label.place(relx=0.47, rely=0.03)
 
 host_entry = ttk.Entry(root, width=15)
 host_entry.place(relx=0.5, rely=0.03)
-host_entry.insert(0, 'localhost')
+host_entry.insert(0, 'dianfossey-do-user-35965399-0.j.db.ondigitalocean.com')
 
 
 mergin_button = ttk.Button(root, text="Connect to server",width=20, command=connect_db)

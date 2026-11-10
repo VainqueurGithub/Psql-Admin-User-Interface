@@ -1,0 +1,45 @@
+from enum import Enum
+
+from pydantic import Field
+
+from canvas_sdk.commands.base import _DelegateCommandMixin, _SignCommandMixin
+from canvas_sdk.commands.commands.assessment_link import _AssessmentLinkedCommand
+from canvas_sdk.commands.constants import ServiceProvider
+
+
+class ImagingOrderCommand(_DelegateCommandMixin, _SignCommandMixin, _AssessmentLinkedCommand):
+    """A class for managing an Imaging Order command within a specific note."""
+
+    class Meta:
+        key = "imagingOrder"
+
+    class Priority(Enum):
+        ROUTINE = "Routine"
+        URGENT = "Urgent"
+        STAT = "STAT"
+
+    image_code: str | None = Field(default=None, json_schema_extra={"commands_api_name": "image"})
+    diagnosis_codes: list[str] | None = Field(
+        default=None, json_schema_extra={"commands_api_name": "indications"}
+    )
+    priority: Priority | None = None
+    additional_details: str | None = Field(default=None, max_length=1024)
+    service_provider: ServiceProvider | None = Field(
+        default=None, json_schema_extra={"commands_api_name": "ordering_provider"}
+    )
+    comment: str | None = Field(default=None, max_length=1024)
+    ordering_provider_key: str | None = None
+    linked_items_urns: list[str] | None = None
+
+    @property
+    def values(self) -> dict:
+        """The Imaging Order command's field values."""
+        values = super().values
+
+        if self.is_dirty("service_provider"):
+            values["service_provider"] = self.service_provider.__dict__
+
+        return values
+
+
+__exports__ = ("ImagingOrderCommand",)

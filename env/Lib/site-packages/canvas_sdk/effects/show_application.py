@@ -1,0 +1,50 @@
+from typing import Any
+
+from pydantic import Field
+
+from canvas_generated.messages.effects_pb2 import EffectType
+from canvas_sdk.effects.base import _BaseEffect
+
+
+class ShowApplicationEffect(_BaseEffect):
+    """An Effect that returns an application's properties."""
+
+    class Meta:
+        effect_type = EffectType.SHOW_APPLICATION
+
+    name: str = Field(min_length=1)
+    identifier: str = Field(min_length=1)
+    open_by_default: bool = Field(default=False)
+    priority: int = Field(default=0)
+    dock_edge: str | None = Field(default=None)
+    dock_size: str | None = Field(default=None)
+    icon_url: str | None = Field(default=None)
+    badge_count: int | None = Field(default=None, ge=0)
+    menu_position: str | None = Field(default=None)
+    show_in_panel: bool | None = Field(default=None)
+    visible: bool = Field(default=True)
+
+    @property
+    def values(self) -> dict[str, Any]:
+        """The ShowApplicationEffect's values."""
+        return {
+            "name": self.name,
+            "identifier": self.identifier,
+            "open_by_default": self.open_by_default,
+            "priority": self.priority,
+            "dock_edge": self.dock_edge,
+            "dock_size": self.dock_size,
+            "icon_url": self.icon_url,
+            "badge_count": self.badge_count,
+            "menu_position": self.menu_position,
+            "show_in_panel": self.show_in_panel,
+            "visible": self.visible,
+        }
+
+    @property
+    def effect_payload(self) -> dict[str, Any]:
+        """The payload of the effect."""
+        return {"data": self.values}
+
+
+__exports__ = ("ShowApplicationEffect",)

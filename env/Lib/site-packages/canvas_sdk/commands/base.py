@@ -1,0 +1,342 @@
+import json
+import re
+from enum import EnumType
+from types import NoneType, UnionType
+from typing import TYPE_CHECKING, Annotated, Any, Union, get_args, get_origin
+from uuid import UUID
+
+from django.core.exceptions import ImproperlyConfigured
+from pydantic import BeforeValidator, ConfigDict
+
+from canvas_sdk.base import TrackableFieldsModel
+from canvas_sdk.commands.constants import Coding
+from canvas_sdk.effects import Effect
+from canvas_sdk.effects.command_custom_html import _CommandCustomHtml
+from canvas_sdk.effects.command_metadata.base import _CommandMetadata
+from canvas_sdk.v1.data import Command, Note
+
+if TYPE_CHECKING:
+    from canvas_sdk.effects.protocol_card import Recommendation
+
+
+def _blank_to_none(value: Any) -> Any:
+    """Read a blank id as an absent one.
+
+    These fields took a string before they took a UUID, so a caller with nothing to send may send an
+    empty string rather than None. That is not an id, and it is not an error either.
+    """
+    if isinstance(value, str) and not value.strip():
+        return None
+
+    return value
+
+
+#: An id that may be absent, given either as None or as an empty string.
+_OptionalId = Annotated[UUID | None, BeforeValidator(_blank_to_none)]
+
+
+class _BaseCommand(TrackableFieldsModel):
+    class Meta:
+        key = ""
+        originate_required_fields = ("note_uuid",)
+        edit_required_fields = ("command_uuid",)
+        send_required_fields = ("command_uuid",)
+        review_required_fields = ("command_uuid",)
+        delete_required_fields = ("command_uuid",)
+        commit_required_fields = ("command_uuid",)
+        enter_in_error_required_fields = ("command_uuid",)
+        delegate_required_fields = ("command_uuid",)
+        sign_required_fields = ("command_uuid",)
+
+    model_config = ConfigDict(strict=False)
+
+    _dirty_excluded_keys = [
+        "note_uuid",
+        "command_uuid",
+    ]
+
+    def __init__(self, /, **data: Any) -> None:
+        """Initialize the command and mark all provided keys as dirty."""
+        if getattr(self.Meta, "abstract", False):
+            raise TypeError(f"Cannot instantiate abstract class {self.__class__.__name__!r}.")
+
+        super().__init__(**data)
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Validate that the command has a key and required fields."""
+        if (not hasattr(cls.Meta, "key") or not cls.Meta.key) and not getattr(
+            cls.Meta, "abstract", False
+        ):
+            raise ImproperlyConfigured(f"Command {cls.__name__!r} must specify Meta.key.")
+
+        if hasattr(cls.Meta, "commit_required_fields"):
+            command_fields = set(cls.__pydantic_fields__.keys() | cls.__annotations__.keys())
+            for field in cls.Meta.commit_required_fields:
+                if field not in command_fields:
+                    raise ImproperlyConfigured(f"Command {cls.__name__!r} must specify {field}.")
+
+    @classmethod
+    def constantized_key(cls) -> str:
+        return re.sub(r"(?<!^)(?=[A-Z])", "_", cls.Meta.key).upper()
+
+    note_uuid: str | None = None
+    command_uuid: str | None = None
+
+    def _get_effect_method_required_fields(self, method: str) -> tuple:
+        base_required_fields: tuple = getattr(_BaseCommand.Meta, f"{method}_required_fields", ())
+        command_required_fields = super()._get_effect_method_required_fields(method)
+        return tuple(set(base_required_fields) | set(command_required_fields))
+
+    @property
+    def coding_filter(self) -> Coding | None:
+        """The coding filter used for command insertion in protocol cards."""
+        return None
+
+    @classmethod
+    def _get_property_choices(cls, name: str, schema: dict) -> list[dict] | None:
+        definition = schema.get("properties", {}).get(name, {})
+        if not (choice_ref := next((a.get("$ref") for a in definition.get("anyOf", [])), None)):
+            return None
+        choice_key = choice_ref.split("#/$defs/")[-1]
+        return schema.get("$defs", {}).get(choice_key, {}).get("enum")
+
+    @classmethod
+    def _get_property_type(cls, name: str) -> type | None:
+        annotation = cls.model_fields[name].annotation
+        origin = get_origin(annotation)
+
+        # Handle Union types
+        if origin is UnionType or origin is Union:
+            annotation_args = get_args(annotation)
+            # Filter out NoneType and take the first valid type
+            annotation = next(
+                (arg for arg in annotation_args if arg is not NoneType),
+                annotation_args[0],
+            )
+
+        if type(annotation) is EnumType:
+            return str
+
+        return annotation
+
+    @classmethod
+    def command_schema(cls) -> dict:
+        """The schema of the command."""
+        base_properties = {"note_uuid", "command_uuid"}
+        schema = cls.model_json_schema()
+        required_fields: tuple = getattr(cls.Meta, "commit_required_fields", ())
+
+        return {
+            definition.get("commands_api_name", name): {
+                "required": name in required_fields,
+                "type": cls._get_property_type(name),
+                "choices": cls._get_property_choices(name, schema),
+            }
+            for name, definition in schema["properties"].items()
+            if name not in base_properties
+        }
+
+    def _anchor_patient_id(self) -> str | None:
+        """The patient whose chart this command writes to, when that can be known.
+
+        Returns:
+            The patient's id, or None when there is nothing to resolve it from *or* the anchor is
+            not persisted yet. The second case is not an error: a plugin may return several effects
+            from one handler, and the note or command a later effect names may not exist at the
+            moment that effect is built.
+        """
+        if note_uuid := self.note_uuid:
+            return Note.objects.filter(id=note_uuid).values_list("patient__id", flat=True).first()
+
+        if command_uuid := self.command_uuid:
+            return (
+                Command.objects.filter(id=command_uuid)
+                .values_list("patient__id", flat=True)
+                .first()
+            )
+
+        return None
+
+    def _anchor_note_id(self) -> str | None:
+        """The note this command is written in, when that can be known.
+
+        Returns:
+            The note's id, or None when there is nothing to resolve it from *or* the anchor is not
+            persisted yet, for the same reason `_anchor_patient_id` returns None in that case.
+        """
+        if note_uuid := self.note_uuid:
+            note_id = Note.objects.filter(id=note_uuid).values_list("id", flat=True).first()
+        elif command_uuid := self.command_uuid:
+            note_id = (
+                Command.objects.filter(id=command_uuid).values_list("note__id", flat=True).first()
+            )
+        else:
+            return None
+
+        return str(note_id) if note_id is not None else None
+
+    def _is_target_patient(self, patient_id: str) -> bool:
+        """Whether the given patient is the one whose chart this command writes to.
+
+        True when the anchor cannot be resolved: a command that does not yet know its patient must
+        not refuse a record on the suspicion that it belongs to someone else
+        """
+        anchor_patient_id = self._anchor_patient_id()
+
+        return anchor_patient_id is None or anchor_patient_id == patient_id
+
+    def originate(self, line_number: int = -1, commit: bool = False) -> Effect:
+        """Originate a new command in the note body."""
+        self._validate_before_effect("originate")
+        return Effect(
+            type=f"ORIGINATE_{self.constantized_key()}_COMMAND",
+            payload=json.dumps(
+                {
+                    "command": self.command_uuid,
+                    "note": self.note_uuid,
+                    "data": self.values,
+                    "line_number": line_number,
+                    "commit": commit,
+                }
+            ),
+        )
+
+    def _origination_payload_for_batch(self, line_number: int = -1) -> dict:
+        """Originate a new command in the note body for batch processing."""
+        self._validate_before_effect("originate")
+        return {
+            "type": f"ORIGINATE_{self.constantized_key()}_COMMAND",
+            "command": self.command_uuid,
+            "note": self.note_uuid,
+            "data": self.values,
+            "line_number": line_number,
+        }
+
+    def edit(self) -> Effect:
+        """Edit the command."""
+        self._validate_before_effect("edit")
+        return Effect(
+            type=f"EDIT_{self.constantized_key()}_COMMAND",
+            payload=json.dumps(
+                {
+                    "command": self.command_uuid,
+                    "data": self.values,
+                }
+            ),
+        )
+
+    def set_custom_html(self, custom_html: str | None) -> Effect:
+        """Set or clear custom_html on a command."""
+        if not self.command_uuid:
+            raise ValueError("Field 'command_uuid' is required to set custom html.")
+
+        return _CommandCustomHtml(
+            command_id=self.command_uuid,  # type:ignore[arg-type]
+            custom_html=custom_html,
+        ).apply()
+
+    def delete(self) -> Effect:
+        """Delete the command."""
+        self._validate_before_effect("delete")
+        return Effect(
+            type=f"DELETE_{self.constantized_key()}_COMMAND",
+            payload=json.dumps({"command": self.command_uuid}),
+        )
+
+    def commit(self) -> Effect:
+        """Commit the command."""
+        self._validate_before_effect("commit")
+        return Effect(
+            type=f"COMMIT_{self.constantized_key()}_COMMAND",
+            payload=json.dumps({"command": self.command_uuid}),
+        )
+
+    def enter_in_error(self) -> Effect:
+        """Mark the command as entered-in-error."""
+        self._validate_before_effect("enter_in_error")
+        return Effect(
+            type=f"ENTER_IN_ERROR_{self.constantized_key()}_COMMAND",
+            payload=json.dumps({"command": self.command_uuid}),
+        )
+
+    def upsert_metadata(self, key: str, value: str) -> Effect:
+        """Upsert a metadata record on the command.
+
+        Args:
+            key: The key of the metadata.
+            value: The value of the metadata.
+
+        Returns:
+            An effect that upserts the metadata record on the command.
+
+        Raises:
+            ValueError: If command_uuid is not set.
+        """
+        if not self.command_uuid:
+            raise ValueError("Field 'command_uuid' is required to upsert metadata.")
+
+        return _CommandMetadata(
+            command_id=self.command_uuid, schema_key=self.Meta.key, key=key
+        ).upsert(value=value)
+
+    def recommendation_context(self) -> dict:
+        return {
+            "command": {"type": self.Meta.key},
+            "context": self.values
+            | {"effect_type": f"ORIGINATE_{self.constantized_key()}_COMMAND"},
+        }
+
+    def recommend(self, title: str = "", button: str | None = None) -> "Recommendation":
+        """Returns a command recommendation to be inserted via Protocol Card."""
+        from canvas_sdk.effects.protocol_card import Recommendation
+
+        if button is None:
+            button = self.constantized_key().lower().replace("_", " ")
+        return Recommendation(title=title, button=button, commands=[self])
+
+
+class _SendableCommandMixin:
+    def send(self) -> Effect:
+        """Fire the send effect the command."""
+        self._validate_before_effect("send")  # type: ignore[attr-defined]
+        return Effect(
+            type=f"SEND_{self.constantized_key()}_COMMAND",  # type: ignore[attr-defined]
+            payload=json.dumps({"command": self.command_uuid}),  # type: ignore[attr-defined]
+        )
+
+
+class _ReviewableCommandMixin:
+    def review(self) -> Effect:
+        """Fire the review effect the command."""
+        self._validate_before_effect("review")  # type: ignore[attr-defined]
+        return Effect(
+            type=f"REVIEW_{self.constantized_key()}_COMMAND",  # type: ignore[attr-defined]
+            payload=json.dumps({"command": self.command_uuid}),  # type: ignore[attr-defined]
+        )
+
+
+class _DelegateCommandMixin:
+    def delegate(self) -> Effect:
+        """Fire the delegate effect the command."""
+        self._validate_before_effect("delegate")  # type: ignore[attr-defined]
+        return Effect(
+            type=f"DELEGATE_{self.constantized_key()}_COMMAND",  # type: ignore[attr-defined]
+            payload=json.dumps({"command": self.command_uuid}),  # type: ignore[attr-defined]
+        )
+
+
+class _SignCommandMixin:
+    def sign(self) -> Effect:
+        """Fire the sign effect the command."""
+        self._validate_before_effect("sign")  # type: ignore[attr-defined]
+        return Effect(
+            type=f"SIGN_{self.constantized_key()}_COMMAND",  # type: ignore[attr-defined]
+            payload=json.dumps({"command": self.command_uuid}),  # type: ignore[attr-defined]
+        )
+
+
+__exports__ = (
+    "_BaseCommand",
+    "_SendableCommandMixin",
+    "_ReviewableCommandMixin",
+)

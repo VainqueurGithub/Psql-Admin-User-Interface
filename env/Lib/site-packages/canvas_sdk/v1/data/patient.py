@@ -1,0 +1,445 @@
+from __future__ import annotations
+
+from typing import Any
+
+import arrow
+from django.contrib.postgres.fields import ArrayField
+from django.db import models
+from django.db.models import TextChoices
+
+from canvas_sdk.v1.data.base import (
+    IdentifiableModel,
+    MetadataModel,
+    TimestampedModel,
+)
+from canvas_sdk.v1.data.common import (
+    AddressState,
+    AddressType,
+    AddressUse,
+    ContactPointState,
+    ContactPointSystem,
+    ContactPointUse,
+)
+from canvas_sdk.v1.data.utils import create_key, generate_mrn, presigned_url
+
+DEFAULT_AVATAR_URL = "https://d3hn0m4rbsz438.cloudfront.net/avatar1.png"
+
+
+class SexAtBirth(TextChoices):
+    """SexAtBirth."""
+
+    FEMALE = "F", "female"
+    MALE = "M", "male"
+    OTHER = "O", "other"
+    UNKNOWN = "UNK", "unknown"
+    BLANK = "", ""
+
+
+class PatientSettingConstants:
+    """PatientSettingConstants."""
+
+    LAB = "lab"
+    PHARMACY = "pharmacy"
+    IMAGING_CENTER = "imagingCenter"
+    CONTACT_METHOD = "contactMethod"
+    PREFERRED_SCHEDULING_TIMEZONE = "preferredSchedulingTimezone"
+
+
+class Patient(TimestampedModel):
+    """A class representing a patient."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_patient_001"
+
+    id = models.CharField(
+        max_length=32, db_column="key", unique=True, editable=False, default=create_key
+    )
+    first_name = models.CharField(max_length=255, default="", blank=True)
+    middle_name = models.CharField(max_length=255, default="", blank=True)
+    last_name = models.CharField(max_length=255, default="", blank=True)
+    maiden_name = models.CharField(max_length=255, default="", blank=True)
+    birth_date = models.DateField()
+    business_line = models.ForeignKey(
+        "v1.BusinessLine",
+        on_delete=models.DO_NOTHING,
+        related_name="patients",
+        null=True,
+    )
+    sex_at_birth = models.CharField(choices=SexAtBirth.choices, max_length=3)
+
+    prefix = models.CharField(max_length=100, blank=True, default="")
+    suffix = models.CharField(max_length=100, blank=True, default="")
+    nickname = models.CharField(max_length=255)
+    sexual_orientation_term = models.CharField(max_length=255, default="", blank=True)
+    sexual_orientation_code = models.CharField(max_length=255, default="", blank=True)
+    gender_identity_term = models.CharField(max_length=255, default="", blank=True)
+    gender_identity_code = models.CharField(max_length=255, default="", blank=True)
+    preferred_pronouns = models.CharField(max_length=255, default="", blank=True)
+    biological_race_codes = ArrayField(
+        models.CharField(max_length=100, default="", blank=True), default=list, blank=True
+    )
+    cultural_ethnicity_codes = ArrayField(
+        models.CharField(max_length=100, default="", blank=True), default=list, blank=True
+    )
+    last_known_timezone = models.CharField(max_length=32, null=True, blank=True)
+    mrn = models.CharField(max_length=9, unique=True, default=generate_mrn)
+    active = models.BooleanField(default=True)
+    deceased = models.BooleanField(default=False)
+    deceased_datetime = models.DateTimeField(null=True, blank=True)
+    deceased_cause = models.TextField(default="", blank=True)
+    deceased_comment = models.TextField(default="", blank=True)
+    other_gender_description = models.CharField(max_length=255, blank=True, default="")
+    social_security_number = models.CharField(max_length=9, blank=True, default="")
+    administrative_note = models.TextField(null=True, blank=True)
+    clinical_note = models.TextField(default="", blank=True)
+    mothers_maiden_name = models.CharField(max_length=255, blank=True, default="")
+    multiple_birth_indicator = models.BooleanField(null=True, blank=True)
+    birth_order = models.BigIntegerField(null=True, blank=True)
+
+    default_location = models.ForeignKey(
+        "v1.PracticeLocation",
+        on_delete=models.SET_NULL,
+        default=None,
+        null=True,
+        blank=True,
+        related_name="default_patients",
+    )
+    default_provider = models.ForeignKey(
+        "v1.Staff",
+        on_delete=models.SET_NULL,
+        default=None,
+        null=True,
+        blank=True,
+        related_name="default_patients",
+    )
+    user = models.OneToOneField("v1.CanvasUser", on_delete=models.DO_NOTHING, null=True)
+
+    @classmethod
+    def find(cls, id: str) -> Patient:
+        """Find a patient by id."""
+        return cls._default_manager.get(id=id)
+
+    def __str__(self) -> str:
+        return f"{self.first_name} {self.last_name}"
+
+    def age_at(self, time: arrow.Arrow) -> float:
+        """Given a datetime, returns what the patient's age would be at that datetime."""
+        age = float(0)
+        birth_date = arrow.get(self.birth_date)
+        if birth_date.date() < time.date():
+            age = time.datetime.year - birth_date.datetime.year
+            if time.datetime.month < birth_date.datetime.month or (
+                time.datetime.month == birth_date.datetime.month
+                and time.datetime.day < birth_date.datetime.day
+            ):
+                age -= 1
+
+            current_year = birth_date.shift(years=age)
+            next_year = birth_date.shift(years=age + 1)
+            age += (time.date() - current_year.date()) / (next_year.date() - current_year.date())
+        return age
+
+    def get_setting(self, name: str) -> Any:
+        """Returns a patient setting value by name."""
+        try:
+            return self.settings.get(name=name).value
+        except PatientSetting.DoesNotExist:
+            return None
+
+    @property
+    def full_name(self) -> str:
+        """Returns the patient's full name."""
+        return " ".join(
+            n for n in (self.first_name, self.middle_name, self.last_name, self.suffix) if n
+        )
+
+    @property
+    def preferred_pharmacy(self) -> dict[str, str] | None:
+        """Returns the patient's preferred pharmacy."""
+        pharmacy_setting = self.get_setting(PatientSettingConstants.PHARMACY) or {}
+        if isinstance(pharmacy_setting, list):
+            for pharmacy in pharmacy_setting:
+                if pharmacy.get("default", False):
+                    return pharmacy
+            return None
+        return pharmacy_setting
+
+    @property
+    def preferred_pharmacies(self) -> list[dict[str, Any]] | None:
+        """
+        Returns the pharmacy patient setting, a list of dicts of the patient's preferred pharmacies.
+        If the pharmacy setting is currently a dict, make it the default and a list.
+        """
+        pharmacy_setting = self.get_setting(PatientSettingConstants.PHARMACY) or []
+        if isinstance(pharmacy_setting, dict):
+            return [{**pharmacy_setting, "default": True}]
+        elif isinstance(pharmacy_setting, list):
+            return pharmacy_setting
+
+        return None
+
+    @property
+    def preferred_full_name(self) -> str:
+        """Returns the patient's preferred full name, taking nickname into consideration."""
+        return " ".join(n for n in (self.preferred_first_name, self.last_name, self.suffix) if n)
+
+    @property
+    def preferred_first_name(self) -> str:
+        """Returns the patient's preferred first name, taking nickname into consideration."""
+        return self.nickname or self.first_name
+
+    @property
+    def primary_phone_number(self) -> PatientContactPoint | None:
+        """Returns the patient's primary phone number, if available."""
+        return (self.telecom.filter(system=ContactPointSystem.PHONE).order_by("rank")).first()
+
+    @property
+    def photo(self) -> PatientPhoto | None:
+        """Return the patient's first uploaded avatar photo, if any."""
+        photo = self.photos.first()
+        if photo and photo.url and str(photo.url).startswith("patient-avatars"):
+            return photo
+        return None
+
+    @property
+    def photo_url(self) -> str:
+        """Return a presigned URL for the patient's photo, or the default avatar."""
+        photo = self.photo
+        if photo:
+            return presigned_url(photo.url.name)
+        return DEFAULT_AVATAR_URL
+
+
+class PatientContactPoint(TimestampedModel, IdentifiableModel):
+    """A class representing a patient contact point."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_patientcontactpoint_001"
+
+    system = models.CharField(choices=ContactPointSystem.choices, max_length=20)
+    value = models.CharField(max_length=100)
+    use = models.CharField(choices=ContactPointUse.choices, max_length=20)
+    use_notes = models.CharField(max_length=255)
+    rank = models.IntegerField()
+    state = models.CharField(choices=ContactPointState.choices, max_length=20)
+    patient = models.ForeignKey(
+        "v1.Patient", on_delete=models.DO_NOTHING, related_name="telecom", null=True
+    )
+    has_consent = models.BooleanField()
+    last_verified = models.DateTimeField(null=True, blank=True)
+    verification_token = models.CharField(max_length=32)
+    opted_out = models.BooleanField()
+
+
+class PatientAddress(TimestampedModel, IdentifiableModel):
+    """A class representing a patient address."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_patientaddress_001"
+
+    line1 = models.CharField(max_length=255, default="", blank=True)
+    line2 = models.CharField(max_length=255, default="", blank=True)
+    city = models.CharField(max_length=255)
+    district = models.CharField(max_length=255, blank=True, default="")
+    state_code = models.CharField(max_length=2)
+    postal_code = models.CharField(max_length=255)
+    use = models.CharField(choices=AddressUse.choices, max_length=10, default=AddressUse.HOME)
+    type = models.CharField(choices=AddressType.choices, max_length=10, default=AddressType.BOTH)
+    longitude = models.FloatField(null=True, blank=True)
+    latitude = models.FloatField(null=True, blank=True)
+    start = models.DateField(null=True, blank=True)
+    end = models.DateField(null=True, blank=True)
+    country = models.CharField(max_length=255)
+    state = models.CharField(
+        choices=AddressState.choices, max_length=20, default=AddressState.ACTIVE
+    )
+
+    patient = models.ForeignKey(
+        "v1.Patient", on_delete=models.DO_NOTHING, related_name="addresses", null=True
+    )
+
+    def __str__(self) -> str:
+        return f"id={self.id}"
+
+
+class PatientExternalIdentifier(TimestampedModel, IdentifiableModel):
+    """A class representing a patient external identifier."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_patientexternalidentifier_001"
+
+    patient = models.ForeignKey(
+        "v1.Patient",
+        related_name="external_identifiers",
+        on_delete=models.DO_NOTHING,
+        null=True,
+    )
+    use = models.CharField(max_length=255)
+    identifier_type = models.CharField(max_length=255)
+    system = models.CharField(max_length=255)
+    value = models.CharField(max_length=255)
+    issued_date = models.DateField()
+    expiration_date = models.DateField()
+
+    def __str__(self) -> str:
+        return f"id={self.id}"
+
+
+class PatientSetting(TimestampedModel):
+    """PatientSetting."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_patientsetting_001"
+
+    patient = models.ForeignKey(
+        "v1.Patient", on_delete=models.DO_NOTHING, related_name="settings", null=True
+    )
+    name = models.CharField(max_length=100)
+    value = models.JSONField()
+
+
+class PatientMetadata(MetadataModel):
+    """A class representing Patient Metadata."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_patientmetadata_001"
+
+    patient = models.ForeignKey(
+        "v1.Patient", on_delete=models.CASCADE, related_name="metadata", null=True
+    )
+
+
+class PatientFacilityAddress(PatientAddress):
+    """PatientFacilityAddress."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_patientfacilityaddress_001"
+
+    room_number = models.CharField(max_length=100, null=True)
+    facility = models.ForeignKey(
+        "v1.Facility", on_delete=models.DO_NOTHING, related_name="patient_facilities", null=True
+    )
+
+
+class ContactCategory(TimestampedModel):
+    """A contact-category coding available in this Canvas instance.
+
+    Use this to look up a valid coding before attaching it to a patient contact. Writing a
+    coding that does not exist here is rejected rather than created on the fly.
+    """
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_contactcategory_001"
+
+    name = models.CharField(max_length=255)
+    code = models.CharField(max_length=10)
+    # Aliases home-app's `code_system` column.
+    system = models.CharField(max_length=255)
+    protected = models.BooleanField(default=False)
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.code})"
+
+
+class PatientContactPerson(TimestampedModel, IdentifiableModel):
+    """A patient's contact: an emergency contact, next-of-kin, or other related person.
+
+    A contact either holds the person's details directly, or references another Canvas
+    patient through `related_patient`. When `related_patient` is set, that patient's own
+    details supersede the values stored here.
+    """
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_patientcontactperson_001"
+
+    patient = models.ForeignKey(
+        "v1.Patient", on_delete=models.DO_NOTHING, related_name="contacts", null=True
+    )
+    name = models.CharField(max_length=255, blank=True, default="")
+    phone_number = models.CharField(max_length=10, blank=True, default="")
+    email = models.CharField(max_length=255, blank=True, default="")
+    comments = models.TextField(blank=True, default="")
+    related_patient = models.ForeignKey(
+        "v1.Patient", on_delete=models.DO_NOTHING, related_name="related_contacts", null=True
+    )
+
+    def __str__(self) -> str:
+        return f"PatientContactPerson(id={self.id}, name={self.name})"
+
+
+class PatientContactCategory(TimestampedModel):
+    """The link between a patient's contact and one of its category codings."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_patientcontactcategory_001"
+
+    contact_person = models.ForeignKey(
+        PatientContactPerson, on_delete=models.DO_NOTHING, related_name="categories"
+    )
+    category = models.ForeignKey(
+        ContactCategory, on_delete=models.DO_NOTHING, related_name="patient_contact_categories"
+    )
+
+    def __str__(self) -> str:
+        return f"PatientContactCategory(dbid={self.dbid})"
+
+
+class PatientPhoto(TimestampedModel):
+    """PatientPhoto."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_patientphoto_001"
+
+    patient = models.ForeignKey("v1.Patient", on_delete=models.DO_NOTHING, related_name="photos")
+    url = models.FileField(max_length=255)
+    title = models.CharField(max_length=255, blank=True, default="")
+
+
+class PatientIdentificationCard(TimestampedModel):
+    """PatientIdentificationCard model for storing patient ID card images."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_patientidentificationcard_001"
+
+    patient = models.ForeignKey(
+        "v1.Patient", on_delete=models.DO_NOTHING, related_name="identification_cards"
+    )
+    image = models.FileField(max_length=255)
+    title = models.CharField(max_length=255, blank=True, default="")
+    active = models.BooleanField(default=True)
+
+    def __str__(self) -> str:
+        return f"PatientIdentificationCard(dbid={self.dbid}, title={self.title})"
+
+    @property
+    def image_url(self) -> str | None:
+        """
+        Return a presigned URL for accessing the ID card image.
+
+        Returns the presigned S3 URL if an image file exists,
+        otherwise returns None.
+        """
+        if self.image:
+            return presigned_url(self.image.name)
+        return None
+
+
+__exports__ = (
+    "SexAtBirth",
+    "PatientSettingConstants",
+    "Patient",
+    "ContactCategory",
+    "PatientContactPerson",
+    "PatientContactCategory",
+    "PatientContactPoint",
+    "PatientAddress",
+    "PatientFacilityAddress",
+    "PatientExternalIdentifier",
+    "PatientIdentificationCard",
+    "PatientPhoto",
+    "PatientSetting",
+    "PatientMetadata",
+    # not defined here but used by current plugins
+    "ContactPointState",
+    "ContactPointSystem",
+)

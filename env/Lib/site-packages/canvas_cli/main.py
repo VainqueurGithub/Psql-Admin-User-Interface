@@ -1,0 +1,139 @@
+import atexit
+import importlib.metadata
+from pathlib import Path
+
+import typer
+
+from canvas_cli.apps import namespace, platform, plugin
+from canvas_cli.apps.emit import emit
+from canvas_cli.apps.logs import logs as logs_command
+from canvas_cli.apps.run_plugins import run_plugin, run_plugins
+from canvas_cli.utils.context import context
+from canvas_cli.utils.platform_notice import show_platform_notice
+from canvas_cli.utils.update_check import check_for_updates
+
+APP_NAME = "canvas_cli"
+
+# The main app
+app = typer.Typer(no_args_is_help=True, rich_markup_mode=None, add_completion=False)
+
+# Commands
+app.command(short_help="Sign in to Canvas Platform through your browser")(platform.login)
+app.command(short_help="Sign out of Canvas Platform")(platform.logout)
+app.command(short_help="Show which Canvas Platform you are signed in to, and as whom")(
+    platform.whoami
+)
+app.command(short_help="Create a new plugin")(platform.init)
+app.command(short_help="Publish a plugin to Canvas Platform and deploy it")(platform.deploy)
+app.command(short_help="Clone a plugin's repository from Canvas Platform")(platform.clone)
+app.command(short_help="Install a plugin into a Canvas instance")(plugin.install)
+app.command(short_help="Uninstall a plugin")(platform.uninstall)
+app.command(short_help="Enable a plugin from a Canvas instance")(plugin.enable)
+app.command(short_help="Disable a plugin from a Canvas instance")(plugin.disable)
+app.command(short_help="List all plugins from a Canvas instance")(plugin.list)
+app.command(short_help="Validate the Canvas Manifest json file")(plugin.validate_manifest)
+app.command(short_help="Validate a plugin's manifest and that its handlers load in the sandbox.")(
+    plugin.validate
+)
+app.command(
+    short_help="Listen and print log streams or fetches historical logs from a Canvas instance."
+)(logs_command)
+app.command(
+    short_help="Send an event fixture to your locally running plugin-runner process, and print any resultant effects."
+)(emit)
+app.command(short_help="Run the specified plugins for local development.")(run_plugins)
+app.command(short_help="Run the specified plugin for local development.")(run_plugin)
+app.command(
+    name="git-credential",
+    hidden=True,
+    short_help="Git credential helper for Canvas Platform pushes (invoked by git).",
+)(platform.git_credential)
+
+# Config app
+config_app = typer.Typer(
+    help="Manage plugin variables. Values are write-only; only key names and whether they are set are returned.",
+    rich_markup_mode=None,
+    add_completion=False,
+)
+app.add_typer(config_app, name="config")
+config_app.command(name="list", short_help="List plugin variables on a Canvas instance.")(
+    plugin.list_secrets
+)
+config_app.command(name="set", short_help="Set plugin variables.")(platform.set_variables)
+config_app.command(name="unset", short_help="Clear plugin variable values.")(
+    platform.unset_variables
+)
+
+# Namespace app
+namespace_app = typer.Typer(
+    help="Manage custom data namespaces.", rich_markup_mode=None, add_completion=False
+)
+app.add_typer(namespace_app, name="namespace")
+namespace_app.command(name="list", short_help="List all custom data namespaces.")(
+    namespace.list_namespaces
+)
+namespace_app.command(name="inspect", short_help="Inspect tables in a namespace.")(
+    namespace.inspect
+)
+namespace_app.command(
+    name="reset", short_help="Reset a namespace to initial state (dry-run by default)."
+)(namespace.reset)
+namespace_app.command(name="drop", short_help="Drop a namespace (dry-run by default).")(
+    namespace.drop
+)
+
+# Our current version
+__version__ = importlib.metadata.version("canvas")
+
+
+def version_callback(value: bool) -> None:
+    """Method called when the `--version` flag is set. Prints the version and exits the CLI."""
+    if value:
+        print(f"{APP_NAME} Version: {__version__}")
+        raise typer.Exit()
+
+
+def get_app_dir() -> str:
+    """Return the app dir, where the config file will be saved.
+    This method is monkeypatched in conftest.py, for testing purposes.
+    """
+    return typer.get_app_dir(APP_NAME)
+
+
+def get_or_create_config_file() -> Path:
+    """Method called to get a Path to the existent JSON config file, or create one if it doesn't exist."""
+    app_dir = get_app_dir()
+    config_path: Path = Path(app_dir) / "config.json"
+    if not config_path.is_file():
+        Path(app_dir).mkdir(parents=True, exist_ok=True)
+        with open(config_path, "w+") as file:
+            file.write("{}")
+
+    return config_path
+
+
+# Register the update check to run at exit so it fires for --version, --help,
+# and all subcommands regardless of how typer/click handles early exits.
+atexit.register(check_for_updates, __version__, get_app_dir())
+
+
+@app.callback()
+def main(
+    ctx: typer.Context,
+    version: bool | None = typer.Option(
+        None, "--version", callback=version_callback, is_eager=True
+    ),
+) -> None:
+    """Canvas swiss army knife CLI tool."""
+    # Fetch the config file and load our context from it.
+    config_file = get_or_create_config_file()
+
+    context.load_from_file(config_file)
+
+    # git runs `git-credential` itself, so its stderr is not read by the person at the terminal.
+    if ctx.invoked_subcommand != "git-credential":
+        show_platform_notice(get_app_dir())
+
+
+if __name__ == "__main__":
+    app()

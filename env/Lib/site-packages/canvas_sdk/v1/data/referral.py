@@ -1,0 +1,177 @@
+import json
+from typing import cast
+
+from django.db import models
+
+from canvas_sdk.v1.data.action_event_base import BaseActionEvent
+from canvas_sdk.v1.data.base import (
+    AuditedModel,
+    BaseModelManager,
+    BaseQuerySet,
+    CommittableModelManager,
+    CommittableQuerySet,
+    CommittableQuerySetMixin,
+    ForPatientQuerySetMixin,
+    IdentifiableModel,
+    TimestampedModel,
+    ValueSetLookupQuerySetMixin,
+)
+from canvas_sdk.v1.data.coding import Coding
+from canvas_sdk.v1.data.document_review_delegation import DelegatedDocumentMixin
+from canvas_sdk.v1.data.report import Report
+from canvas_sdk.v1.data.task import Task
+
+
+class Referral(AuditedModel, IdentifiableModel):
+    """Referral."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_referral_001"
+
+    objects = cast(CommittableQuerySet, CommittableModelManager())
+
+    patient = models.ForeignKey("v1.Patient", on_delete=models.DO_NOTHING)
+    note = models.ForeignKey("v1.Note", on_delete=models.DO_NOTHING)
+    assessment = models.ForeignKey(
+        "v1.Assessment", on_delete=models.DO_NOTHING, related_name="linked_referrals", null=True
+    )
+    service_provider = models.ForeignKey(
+        "v1.ServiceProvider",
+        on_delete=models.CASCADE,
+        related_name="referrals",
+        null=True,
+        blank=True,
+    )
+    assessments = models.ManyToManyField(
+        "v1.Assessment",
+        related_name="referrals",
+        blank=True,
+        db_table="canvas_sdk_data_api_referral_assessments_001",
+    )
+    clinical_question = models.CharField(max_length=50)
+    priority = models.CharField(max_length=255)
+    include_visit_note = models.BooleanField()
+    notes = models.TextField()
+    date_referred = models.DateTimeField()
+    forwarded = models.BooleanField()
+    internal_comment = models.TextField()
+    internal_task_comment = models.OneToOneField(
+        "v1.TaskComment", on_delete=models.SET_NULL, null=True, related_name="referral"
+    )
+    ignored = models.BooleanField()
+
+    task_ids = models.CharField(max_length=1024)
+
+    def get_task_objects(self) -> "models.QuerySet[Task]":
+        """Convert task IDs to Task objects."""
+        if self.task_ids:
+            task_ids = (
+                json.loads(self.task_ids) if isinstance(self.task_ids, str) else self.task_ids
+            )
+            return Task.objects.filter(id__in=task_ids)
+        return Task.objects.none()
+
+    @property
+    def task_list(self) -> list[Task]:
+        """Convenience property to get task objects."""
+        return list(self.get_task_objects())
+
+    def __str__(self) -> str:
+        return f"Referral {self.id}"
+
+
+class ReferralReviewQuerySet(CommittableQuerySetMixin, ForPatientQuerySetMixin, BaseQuerySet):
+    """A queryset for referral reviews."""
+
+    pass
+
+
+ReferralReviewManager = BaseModelManager.from_queryset(ReferralReviewQuerySet)
+
+
+class ReferralReview(AuditedModel, IdentifiableModel):
+    """ReferralReview."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_referralreview_001"
+
+    objects = cast(ReferralReviewQuerySet, ReferralReviewManager())
+
+    note = models.ForeignKey(
+        "v1.Note", on_delete=models.DO_NOTHING, related_name="referral_reviews"
+    )
+    internal_comment = models.TextField()
+    message_to_patient = models.CharField(max_length=2048)
+    status = models.CharField(max_length=50)
+    patient = models.ForeignKey(
+        "v1.Patient", on_delete=models.DO_NOTHING, related_name="referral_reviews", null=True
+    )
+    patient_communication_method = models.CharField(max_length=30)
+
+
+class ReferralReportQuerySet(ValueSetLookupQuerySetMixin, BaseQuerySet):
+    """QuerySet that supports ValueSet-based lookups via the codings reverse relation."""
+
+
+class ReferralReport(TimestampedModel, IdentifiableModel, DelegatedDocumentMixin, Report):
+    """ReferralReport."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_referralreport_001"
+
+    objects = cast(ReferralReportQuerySet, models.Manager.from_queryset(ReferralReportQuerySet)())
+
+    originator = models.ForeignKey(
+        "v1.CanvasUser", on_delete=models.DO_NOTHING, null=True, related_name="+"
+    )
+
+    requires_signature = models.BooleanField()
+    reviewers = models.ManyToManyField(
+        "v1.Staff",
+        related_name="+",
+        db_table="canvas_sdk_data_api_referralreport_reviewers_001",
+        blank=True,
+    )
+    patient = models.ForeignKey(
+        "v1.Patient", on_delete=models.DO_NOTHING, related_name="referral_reports"
+    )
+    referral = models.ForeignKey(
+        Referral, on_delete=models.DO_NOTHING, related_name="reports", null=True
+    )
+    specialty = models.CharField(max_length=250)
+    review = models.ForeignKey(
+        "ReferralReview", related_name="reports", null=True, blank=True, on_delete=models.SET_NULL
+    )
+    original_date = models.DateField(null=True)
+    comment = models.TextField()
+    priority = models.BooleanField(default=False)
+
+
+class ReferralReportCoding(Coding):
+    """ReferralReportCoding."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_referralreportcoding_001"
+
+    report = models.ForeignKey(ReferralReport, on_delete=models.DO_NOTHING, related_name="codings")
+    value = models.CharField(max_length=1000)
+
+
+class ReferralActionEvent(BaseActionEvent):
+    """Event representing an action taken on a referral, such as faxing it."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_referralactionevent_001"
+
+    referral = models.ForeignKey(
+        "v1.Referral", on_delete=models.CASCADE, related_name="action_events"
+    )
+
+
+__exports__ = (
+    "Referral",
+    "ReferralReport",
+    "ReferralReportCoding",
+    "ReferralReportQuerySet",
+    "ReferralActionEvent",
+)

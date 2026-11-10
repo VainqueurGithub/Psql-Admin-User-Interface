@@ -1,4 +1,3 @@
-
 import csv
 import psycopg2
 from psycopg2 import OperationalError
@@ -170,8 +169,8 @@ def tr_retrieve_data_psql(database,user,password,host,port):
         df_type = pd.concat([df_type,df_type2], ignore_index=True)
 
 
-        df_partie_consomme = pd.DataFrame(partie_consommes, columns=['partie_consomme'])
-        df_partie_consomme2 = pd.DataFrame([[np.nan]], columns=['partie_consomme'])
+        df_partie_consomme = pd.DataFrame(partie_consommes, columns=['partie_consommee'])
+        df_partie_consomme2 = pd.DataFrame([[np.nan]], columns=['partie_consommee'])
         df_partie_consomme = pd.concat([df_partie_consomme,df_partie_consomme2], ignore_index=True)
 
         df_nombre = pd.DataFrame(nombres, columns=['nombre'])
@@ -200,10 +199,10 @@ def tr_retrieve_data_psql(database,user,password,host,port):
         df_age = pd.DataFrame(columns=['age'])
         df_chef_equipe = pd.DataFrame(columns=['chef_equipe'])
         df_type = pd.DataFrame(columns=['type'])
-        df_partie_consomme = pd.DataFrame(columns=['partie_consomme']) 
+        df_partie_consomme = pd.DataFrame(columns=['partie_consommee']) 
         df_famille_gorille = pd.DataFrame(columns=['famille_gorille'])
         df_plante_consommee = pd.DataFrame(columns=['plante_consomee'])
-        
+
         return df_espece, df_signe, df_nombre, df_foret, df_age, df_chef_equipe, df_type, df_partie_consomme, df_famille_gorille, df_plante_consommee
 
 
@@ -211,21 +210,25 @@ def tr_checking_data_integrity(source_raw,source_checked,df_espece,df_signe,df_n
     ''' This function check data integrity before downloading the data into psql.'''
     
     data_success = data.loc[(data['espece'].isin(df_espece['espece'])) & (data['signe'].isin(df_signe['signe'])) &
-        (data['type'].isin(df_type['type'])) & (data['partie_consommee'].isin(df_partie_consomme['partie_consomme'])) & 
-         (data['foret'].isin(df_foret['foret'])) &(data['age_jours'].isin(df_age['age'])) & 
+         (data['type'].isin(df_type['type'])) & (data['partie_consommee'].isin(df_partie_consomme['partie_consommee'])) & 
+         (data['foret'].isin(df_foret['foret'])) & #(data['age_jours'].isin(df_age['age'])) & 
          (data['chef_equipe'].isin(df_chef_equipe['chef_equipe'])) &
-         (data['famille_gorille'].isin(df_famille_gorille['famille_gorille'])) & 
-                        (data['nombre'].isin(df_nombre['nombre'])) & (data['plante_consomee'].isin(df_plante_consommee['nom_espece']))]
+         (data['famille_gorille'].isin(df_famille_gorille['famille_gorille'])) #& 
+                       #(data['nombre'].isin(df_nombre['nombre'])) 
+                       & (data['plante_consomee'].isin(df_plante_consommee['nom_espece']))
+                        ]
     data_success
     
     
     
     data_fail = data.loc[(~data['espece'].isin(df_espece['espece'])) | (~data['signe'].isin(df_signe['signe'])) |
-        (~data['type'].isin(df_type['type'])) | (~data['partie_consommee'].isin(df_partie_consomme['partie_consomme']))  | 
-         (~data['foret'].isin(df_foret['foret'])) | (~data['age_jours'].isin(df_age['age'])) | 
+         (~data['type'].isin(df_type['type'])) | (~data['partie_consommee'].isin(df_partie_consomme['partie_consommee']))  | 
+         (~data['foret'].isin(df_foret['foret'])) | #(~data['age_jours'].isin(df_age['age'])) | 
          (~data['chef_equipe'].isin(df_chef_equipe['chef_equipe'])) |
-         (~data['famille_gorille'].isin(df_famille_gorille['famille_gorille'])) |
-                    (~data['nombre'].isin(df_nombre['nombre'])) | (~data['plante_consomee'].isin(df_plante_consommee['nom_espece']))]
+         (~data['famille_gorille'].isin(df_famille_gorille['famille_gorille'])) #|
+                    #(~data['nombre'].isin(df_nombre['nombre'])) 
+                    | (~data['plante_consomee'].isin(df_plante_consommee['nom_espece']))
+                    ]
     data_fail
 
     

@@ -1,0 +1,50 @@
+class PluginError(Exception):
+    """An exception raised for plugin-related errors."""
+
+
+class PluginValidationError(PluginError):
+    """An exception raised when a plugin package is not valid."""
+
+
+class InvalidPluginFormat(PluginValidationError):
+    """An exception raised when the plugin file format is not supported."""
+
+
+class PluginInstallationError(PluginError):
+    """An exception raised when a plugin fails to install."""
+
+
+class NamespaceWaitTimeout(PluginInstallationError):
+    """Raised when a non-schema-manager times out waiting for the schema manager.
+
+    Distinct from other install failures because it's a transient bootstrap
+    race (the schema manager hasn't created the namespace yet), not a
+    permanent failure. Callers that would otherwise auto-disable a plugin on
+    install failure should leave the plugin enabled when they see this.
+    """
+
+
+class TransientPluginInstallationError(PluginInstallationError):
+    """Raised when install fails for a non-deterministic infra-level reason.
+
+    Wraps network errors during S3 download (e.g. ``requests.ConnectionError``,
+    ``requests.Timeout``) and database connection blips (e.g.
+    ``psycopg.InterfaceError``, ``psycopg.OperationalError``) — the kind of
+    failure that should clear up on a retry. Callers should retry with backoff
+    and must not auto-disable the plugin when they see this, because the
+    plugin's code itself is fine.
+    """
+
+
+class PluginUninstallationError(PluginError):
+    """An exception raised when a plugin fails to uninstall."""
+
+
+class NamespaceAccessError(PluginError):
+    """An exception raised when a plugin cannot access its declared namespace.
+
+    This typically occurs when:
+    - The required access key secret is not configured
+    - The access key is not found in the namespace's auth table
+    - The plugin requests write access but only has read access
+    """

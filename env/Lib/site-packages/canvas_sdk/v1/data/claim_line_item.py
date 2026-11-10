@@ -1,0 +1,207 @@
+from decimal import Decimal
+from typing import Any, Self
+
+from django.db import models
+from django.db.models import OuterRef, Q, Subquery, Sum
+from django.db.models.functions import Coalesce
+
+from canvas_sdk.v1.data.base import IdentifiableModel, TimestampedModel
+from canvas_sdk.v1.data.line_item_transaction import (
+    LineItemTransfer,
+    NewLineItemAdjustment,
+    NewLineItemPayment,
+)
+from canvas_sdk.v1.data.note import PracticeLocationPOS
+
+
+def _total_posted(
+    model: type[NewLineItemPayment | NewLineItemAdjustment | LineItemTransfer],
+) -> Coalesce:
+    # A subquery per type: summing all three over joins counts each amount once per row of the others.
+    return Coalesce(
+        Subquery(
+            model.objects.filter(claim_line_item=OuterRef("pk"))
+            .order_by()
+            .values("claim_line_item")
+            .annotate(total=Sum("amount"))
+            .values("total")
+        ),
+        Decimal(0),
+    )
+
+
+class ClaimLineItemStatus(models.TextChoices):
+    """ClaimLineItemStatus."""
+
+    ACTIVE = "active", "Active"
+    REMOVED = "removed", "Removed"
+
+
+class LineItemCodes(models.TextChoices):
+    """LineItemCodes."""
+
+    COPAY = "COPAY"
+    UNLINKED = "UNLINKED"
+
+
+class FamilyPlanningOptions(models.TextChoices):
+    """FamilyPlanningOptions."""
+
+    YES = ("Y", "Yes")
+    NO = ("N", "No")
+
+
+class ClaimLineItemQuerySet(models.QuerySet):
+    """ClaimLineItemQuerySet."""
+
+    def filter(self, *args: Any, **kwargs: Any) -> Self:
+        """Apply standard filtering to the QuerySet."""
+        return super().filter(*args, **kwargs)
+
+    def exclude(self, *args: Any, **kwargs: Any) -> Self:
+        """Apply standard exclusion to the QuerySet."""
+        return super().exclude(*args, **kwargs)
+
+    def apply_ordering(self) -> Self:
+        """Apply ordering to the QuerySet."""
+        return self.order_by("from_date", "-proc_code")
+
+    def active(self) -> Self:
+        """Return only active claim line items."""
+        return self.exclude(status=ClaimLineItemStatus.REMOVED).apply_ordering()
+
+    def exclude_removed_line_item_without_active_posting(self) -> Self:
+        """Exclude out any line items that are deleted without any active postings."""
+        return (
+            self.filter(
+                Q(status=ClaimLineItemStatus.ACTIVE)
+                | Q(
+                    newlineitempayments__isnull=False,
+                    newlineitempayments__entered_in_error__isnull=True,
+                )
+                | Q(
+                    newlineitemadjustments__isnull=False,
+                    newlineitemadjustments__entered_in_error__isnull=True,
+                )
+                | Q(
+                    lineitemtransfers__isnull=False,
+                    lineitemtransfers__entered_in_error__isnull=True,
+                )
+            )
+            .exclude_removed_line_items_without_balances()
+            .apply_ordering()
+            .distinct()
+        )
+
+    def exclude_removed_line_items_without_balances(self) -> Self:
+        """Exclude removed line items with zero balances."""
+        return (
+            self.annotate(
+                sum_of_all_payments=_total_posted(NewLineItemPayment),
+                sum_of_all_adjustments=_total_posted(NewLineItemAdjustment),
+                sum_of_all_transfers=_total_posted(LineItemTransfer),
+            )
+            .exclude(
+                Q(
+                    status=ClaimLineItemStatus.REMOVED,
+                    sum_of_all_payments=0,
+                    sum_of_all_adjustments=0,
+                    sum_of_all_transfers=0,
+                )
+            )
+            .distinct()
+        )
+
+    def exclude_copay_and_unlinked(self) -> Self:
+        """Exclude both co-pay and unlinked line items."""
+        return self.exclude(
+            proc_code__in=[LineItemCodes.UNLINKED.value, LineItemCodes.COPAY.value]
+        ).apply_ordering()
+
+    def exclude_copay(self) -> Self:
+        """Exclude only co-pay line items."""
+        return self.exclude(proc_code=LineItemCodes.COPAY.value).apply_ordering()
+
+    def exclude_unlinked(self) -> Self:
+        """Exclude only unlinked line items."""
+        return self.exclude(proc_code=LineItemCodes.UNLINKED.value).apply_ordering()
+
+
+class ClaimLineItem(TimestampedModel, IdentifiableModel):
+    """ClaimLineItem."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_quality_and_revenue_claimlineitem_001"
+
+    objects = ClaimLineItemQuerySet.as_manager()
+
+    billing_line_item = models.ForeignKey("v1.BillingLineItem", on_delete=models.CASCADE, null=True)
+    claim = models.ForeignKey("v1.Claim", on_delete=models.CASCADE, related_name="line_items")
+    status = models.CharField(
+        choices=ClaimLineItemStatus.choices, max_length=10, default=ClaimLineItemStatus.ACTIVE
+    )
+    charge = models.DecimalField(max_digits=8, decimal_places=2, default=0.00)
+    from_date = models.CharField(max_length=10, default="0000-00-00")
+    thru_date = models.CharField(max_length=10, default="0000-00-00")
+    narrative = models.CharField(max_length=2000, default="", blank=True)
+    ndc_code = models.CharField(max_length=100, default="", blank=True)
+    ndc_dosage = models.CharField(max_length=100, default="", blank=True)
+    ndc_measure = models.CharField(max_length=100, default="", blank=True)
+    place_of_service = models.CharField(
+        choices=PracticeLocationPOS.choices,
+        max_length=2,
+        default=PracticeLocationPOS.OFFICE,
+        blank=True,
+        null=True,
+    )
+    proc_code = models.CharField(max_length=10, default="")
+    display = models.CharField(max_length=255, default="", blank=True)
+    remote_chg_id = models.CharField(max_length=100, default="", blank=True)
+    units = models.IntegerField(default=1)
+    epsdt = models.CharField(max_length=2, default="", blank=True)
+    family_planning = models.CharField(
+        choices=FamilyPlanningOptions.choices, max_length=1, default="", blank=True
+    )
+
+
+class ClaimLineItemDiagnosisCode(TimestampedModel, IdentifiableModel):
+    """ClaimLineItemDiagnosisCode."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_quality_and_revenue_lineitemdiagnosiscode_001"
+        ordering = ["claim_diagnosis_code__rank"]
+
+    line_item = models.ForeignKey(
+        "v1.ClaimLineItem", on_delete=models.CASCADE, related_name="diagnosis_codes"
+    )
+    claim_diagnosis_code = models.ForeignKey(
+        "v1.ClaimDiagnosisCode",
+        on_delete=models.CASCADE,
+        related_name="line_item_diagnosis_codes",
+        null=True,
+    )
+    code = models.CharField(max_length=20, blank=True)
+    poa = models.CharField(max_length=1, default="", blank=True)
+    linked = models.BooleanField(default=True)
+
+
+class ClaimLineItemModifier(TimestampedModel, IdentifiableModel):
+    """ClaimLineItemModifier."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_quality_and_revenue_lineitemmodifier_001"
+
+    line_item = models.ForeignKey(
+        "v1.ClaimLineItem", on_delete=models.CASCADE, related_name="modifiers"
+    )
+    modifier = models.CharField(max_length=2)
+
+
+__exports__ = (
+    "ClaimLineItem",
+    "ClaimLineItemStatus",
+    "LineItemCodes",
+    "FamilyPlanningOptions",
+    "ClaimLineItemDiagnosisCode",
+    "ClaimLineItemModifier",
+)

@@ -1,0 +1,515 @@
+from typing import Self, cast
+
+from django.db import models
+from django.db.models import Prefetch, Q
+
+from canvas_sdk.v1.data.action_event_base import BaseActionEvent
+from canvas_sdk.v1.data.base import (
+    AuditedModel,
+    BaseModelManager,
+    BaseQuerySet,
+    CommittableModelManager,
+    CommittableQuerySet,
+    CommittableQuerySetMixin,
+    ForPatientQuerySetMixin,
+    IdentifiableModel,
+    TimeframeLookupQuerySetMixin,
+    TimestampedModel,
+    ValueSetLookupQuerySet,
+)
+from canvas_sdk.v1.data.document_review_delegation import DelegatedDocumentMixin
+from canvas_sdk.v1.data.report import Report
+from canvas_sdk.v1.data.report_template_base import (
+    BaseReportTemplate,
+    BaseReportTemplateField,
+    BaseReportTemplateFieldOption,
+    BaseReportTemplateQuerySet,
+)
+from canvas_sdk.v1.data.staff import Staff
+
+
+class LabReportQuerySet(CommittableQuerySetMixin, ForPatientQuerySetMixin, BaseQuerySet):
+    """A queryset for lab reports."""
+
+    def with_result_tests_and_values(self) -> Self:
+        """Prefetch result tests (with their values) and the report's full value list."""
+        return self.prefetch_related(
+            Prefetch(
+                "tests",
+                queryset=LabTest.objects.filter(order__isnull=True).prefetch_related("values"),
+            ),
+            "values",
+        )
+
+
+LabReportManager = BaseModelManager.from_queryset(LabReportQuerySet)
+
+
+class TransmissionType(models.TextChoices):
+    """Choices for transmission types."""
+
+    FAX = "F", "fax"
+    HL7 = "H", "hl7"
+    MANUAL = "M", "manual"
+
+
+class LabReport(AuditedModel, IdentifiableModel, DelegatedDocumentMixin, Report):
+    """A class representing a lab report."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_labreport_001"
+
+    objects = cast(LabReportQuerySet, LabReportManager())
+
+    requires_signature = models.BooleanField()
+    reviewers = models.ManyToManyField(
+        "v1.Staff",
+        related_name="+",
+        db_table="canvas_sdk_data_api_labreport_reviewers_001",
+        blank=True,
+    )
+    patient = models.ForeignKey(
+        "v1.Patient", on_delete=models.DO_NOTHING, related_name="lab_reports", null=True
+    )
+    transmission_type = models.CharField(choices=TransmissionType.choices, max_length=10)
+    for_test_only = models.BooleanField()
+    external_id = models.CharField(max_length=40)
+    reference_id = models.CharField(max_length=40)
+    version = models.IntegerField()
+    requisition_number = models.CharField(max_length=40)
+    review = models.ForeignKey(
+        "LabReview", on_delete=models.DO_NOTHING, related_name="reports", null=True
+    )
+    original_date = models.DateTimeField()
+    date_performed = models.DateTimeField()
+    custom_document_name = models.CharField(max_length=500)
+
+    @property
+    def ordered_tests(self) -> "models.QuerySet[LabTest]":
+        """LabTests created when a LabOrder is placed.
+
+        These rows are not associated with any LabValue results.
+        They represent the tests that are ordered.
+        """
+        return self.tests.filter(order__isnull=False)
+
+    @property
+    def result_tests(self) -> "models.QuerySet[LabTest]":
+        """LabTests created for lab results.
+
+        For FHIR DiagnosticReport and Health Gorilla ingested reports,
+        LabValue records are associated with these tests.
+        """
+        return self.tests.filter(order__isnull=True)
+
+
+class LabReportRemark(TimestampedModel):
+    """A class representing a report-level remark on a lab report."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_labreportremark_001"
+
+    report = models.ForeignKey(
+        LabReport, on_delete=models.DO_NOTHING, related_name="remarks", null=True
+    )
+    comment = models.CharField(max_length=512)
+
+
+class LabReviewQuerySet(CommittableQuerySetMixin, ForPatientQuerySetMixin, BaseQuerySet):
+    """A queryset for lab reviews."""
+
+    pass
+
+
+LabReviewManager = BaseModelManager.from_queryset(LabReviewQuerySet)
+
+
+class LabReview(AuditedModel, IdentifiableModel):
+    """A class representing a lab review."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_labreview_001"
+
+    objects = cast(LabReviewQuerySet, LabReviewManager())
+
+    note = models.ForeignKey("v1.Note", on_delete=models.DO_NOTHING, related_name="lab_reviews")
+    internal_comment = models.TextField()
+    message_to_patient = models.CharField(max_length=2048)
+    status = models.CharField(max_length=50)
+    patient = models.ForeignKey(
+        "v1.Patient", on_delete=models.DO_NOTHING, related_name="lab_reviews", null=True
+    )
+    patient_communication_method = models.CharField(max_length=30)
+
+
+class LabValueTimeframeLookupQuerySetMixin(TimeframeLookupQuerySetMixin):
+    """A class that adds queryset functionality to filter using timeframes."""
+
+    @property
+    def timeframe_filter_field(self) -> str:
+        """Returns the field that should be filtered on. Can be overridden for different models."""
+        return "report__original_date"
+
+
+class LabValueQuerySet(LabValueTimeframeLookupQuerySetMixin, ValueSetLookupQuerySet):
+    """LabValueQuerySet."""
+
+    pass
+
+
+class LabValue(TimestampedModel, IdentifiableModel):
+    """A class representing a lab value."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_labvalue_001"
+
+    objects = LabValueQuerySet.as_manager()
+
+    report = models.ForeignKey(
+        "LabReport", on_delete=models.DO_NOTHING, related_name="values", null=True
+    )
+    value = models.TextField()
+    units = models.CharField(max_length=30)
+    abnormal_flag = models.CharField(max_length=128)
+    reference_range = models.CharField(max_length=128)
+    low_threshold = models.CharField(max_length=30)
+    high_threshold = models.CharField(max_length=30)
+    comment = models.TextField()
+    observation_status = models.CharField(max_length=24)
+    test = models.ForeignKey(
+        "LabTest", related_name="values", null=True, on_delete=models.DO_NOTHING
+    )
+
+
+class LabValueCoding(TimestampedModel):
+    """A class representing a lab value coding."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_labvaluecoding_001"
+
+    value = models.ForeignKey(
+        LabValue, on_delete=models.DO_NOTHING, related_name="codings", null=True
+    )
+    code = models.CharField(max_length=128)
+    name = models.CharField(max_length=256)
+    system = models.CharField(max_length=128)
+
+
+class LabOrder(AuditedModel, IdentifiableModel):
+    """A class representing a lab order."""
+
+    class SpecimenCollectionType(models.TextChoices):
+        """Choices for specimen collection types."""
+
+        ON_LOCATION = "L", "on location"
+        PATIENT_SERVICE_CENTER = "P", "patient service center"
+        OTHER = "O", "other"
+
+    class CourtesyCopyType(models.TextChoices):
+        """Choices for courtesy copy types."""
+
+        ACCOUNT = "A", "account"
+        FAX = "F", "fax"
+        PATIENT = "P", "patient"
+
+    class ManualProcessingStatus(models.TextChoices):
+        """Choices for manual processing statuses."""
+
+        MANUAL_PROCESSING_STATUS_NEEDS_REVIEW = "NEEDS_REVIEW", "Needs Review"
+        MANUAL_PROCESSING_STATUS_IN_PROGRESS = "IN_PROGRESS", "In Progress"
+        MANUAL_PROCESSING_STATUS_PROCESSED = "PROCESSED", "Processed"
+        MANUAL_PROCESSING_STATUS_FLAGGED = "FLAGGED", "Flagged"
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_laborder_001"
+
+    objects = cast(CommittableQuerySet, CommittableModelManager())
+
+    patient = models.ForeignKey(
+        "v1.Patient", on_delete=models.DO_NOTHING, related_name="lab_orders", null=True
+    )
+    ontology_lab_partner = models.CharField(max_length=128)
+
+    note = models.ForeignKey("v1.Note", on_delete=models.DO_NOTHING, null=True)
+    assessment = models.ForeignKey(
+        "v1.Assessment", on_delete=models.DO_NOTHING, related_name="linked_lab_orders", null=True
+    )
+    comment = models.CharField(max_length=128)
+    requisition_number = models.CharField(max_length=32)
+    is_patient_bill = models.BooleanField(null=True)
+    date_ordered = models.DateTimeField()
+    fasting_status = models.BooleanField(null=True)
+    specimen_collection_type = models.CharField(
+        choices=SpecimenCollectionType.choices, null=True, max_length=10
+    )
+    transmission_type = models.CharField(choices=TransmissionType.choices, null=True, max_length=10)
+    courtesy_copy_type = models.CharField(
+        choices=CourtesyCopyType.choices, null=True, max_length=10
+    )
+    courtesy_copy_number = models.CharField(max_length=32)
+    courtesy_copy_text = models.CharField(max_length=64)
+    ordering_provider = models.ForeignKey(
+        Staff, on_delete=models.DO_NOTHING, related_name="lab_orders", null=True
+    )
+    parent_order = models.ForeignKey("v1.LabOrder", on_delete=models.DO_NOTHING, null=True)
+    healthgorilla_id = models.CharField(max_length=40)
+    manual_processing_status = models.CharField(
+        choices=ManualProcessingStatus.choices, null=True, max_length=16
+    )
+    manual_processing_comment = models.TextField(null=True)
+    labcorp_abn_url = models.URLField()
+
+    reports = models.ManyToManyField("v1.LabReport", through="v1.LabTest")
+
+
+class LabOrderReason(AuditedModel):
+    """A class representing a lab order reason."""
+
+    class LabReasonMode(models.TextChoices):
+        """Choices for lab order reasons."""
+
+        MONITOR = "MO", "monitor"
+        INVESTIGATE = "IN", "investigate"
+        SCREEN_FOR = "SF", "screen for"
+        UNKNOWN = "UNK", "unknown"
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_laborderreason_001"
+
+    objects = cast(CommittableQuerySet, CommittableModelManager())
+
+    order = models.ForeignKey(
+        LabOrder, on_delete=models.DO_NOTHING, related_name="reasons", null=True
+    )
+    mode = models.CharField(max_length=30, choices=LabReasonMode)
+
+
+class LabOrderReasonCondition(TimestampedModel):
+    """A class representing a lab order reason's condition."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_laborderreasoncondition_001"
+
+    reason = models.ForeignKey(
+        LabOrderReason, on_delete=models.DO_NOTHING, related_name="reason_conditions", null=True
+    )
+    condition = models.ForeignKey(
+        "v1.Condition",
+        on_delete=models.DO_NOTHING,
+        related_name="lab_order_reason_conditions",
+        null=True,
+    )
+
+
+class LabTest(TimestampedModel, IdentifiableModel):
+    """A class representing a lab test."""
+
+    class LabTestOrderStatus(models.TextChoices):
+        """Choicees for lab test order statuses."""
+
+        NEW = "NE", "new"
+        STAGED_FOR_REQUISITION = "SR", "staged for requisition"
+        SENDING = "SE", "sending"
+        SENDING_FAILED = "SF", "sending failed"
+        PROCESSING = "PR", "processing"
+        PROCESSING_FAILED = "PF", "processing failed"
+        RECEIVED = "RE", "received"
+        REVIEWED = "RV", "reviewed"
+        INACTIVE = "IN", "inactive"
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_labtest_001"
+
+    ontology_test_name = models.CharField(max_length=512, blank=True, default="")
+    ontology_test_code = models.CharField(max_length=512, blank=True, default="")
+    status = models.CharField(max_length=30, choices=LabTestOrderStatus.choices)
+    report = models.ForeignKey(
+        LabReport, on_delete=models.DO_NOTHING, related_name="tests", null=True
+    )
+    aoe_code = models.CharField(max_length=10, default="")
+    procedure_class = models.CharField(max_length=10, default="")
+    specimen_type = models.CharField(max_length=26)
+    specimen_source_code = models.CharField(max_length=5)
+    specimen_source_description = models.CharField(max_length=255)
+    specimen_source_coding_system = models.CharField(max_length=5)
+    order = models.ForeignKey(
+        LabOrder, on_delete=models.DO_NOTHING, related_name="tests", null=True
+    )
+
+    def __str__(self) -> str:
+        return f"{self.ontology_test_name}: f{self.ontology_test_code}"
+
+
+class LabPartner(TimestampedModel, IdentifiableModel):
+    """A class representing a lab partner."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_lab_partner_001"
+
+    objects: models.Manager["LabPartner"]
+
+    name = models.CharField(max_length=256)
+    active = models.BooleanField()
+    electronic_ordering_enabled = models.BooleanField()
+    keywords = models.TextField()
+    default_lab_account_number = models.CharField(max_length=256)
+
+
+class LabPartnerTest(TimestampedModel, IdentifiableModel):
+    """A class representing a lab partner's test."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_lab_partner_test_001"
+
+    objects: models.Manager["LabPartnerTest"]
+
+    lab_partner = models.ForeignKey(
+        "LabPartner", on_delete=models.DO_NOTHING, related_name="available_tests"
+    )
+    order_code = models.CharField(max_length=256, blank=True)
+    order_name = models.TextField()
+    keywords = models.TextField(blank=True)
+    cpt_code = models.CharField(max_length=256, blank=True, null=True)
+
+
+class LabPartnerTestQuestion(TimestampedModel):
+    """A class representing an ask-at-order-entry question for a lab partner test."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_lab_partner_test_question_001"
+
+    objects: models.Manager["LabPartnerTestQuestion"]
+
+    lab_partner_test = models.ForeignKey(
+        "LabPartnerTest", on_delete=models.CASCADE, related_name="questions"
+    )
+    required = models.BooleanField()
+    code = models.CharField(max_length=256)
+    body = models.TextField()
+    type = models.CharField(max_length=256)
+
+
+class LabPartnerTestQuestionChoice(TimestampedModel):
+    """A class representing a choice for a lab partner test question."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_lab_partner_test_question_choice_001"
+
+    objects: models.Manager["LabPartnerTestQuestionChoice"]
+
+    lab_partner_test_question = models.ForeignKey(
+        "LabPartnerTestQuestion", on_delete=models.CASCADE, related_name="choices"
+    )
+    label = models.CharField(max_length=256)
+    value = models.CharField(max_length=256)
+
+
+class FieldType(models.TextChoices):
+    """Choices for lab report template field types."""
+
+    FLOAT = "float", "Float"
+    SELECT = "select", "Select"
+    TEXT = "text", "Text"
+    CHECKBOX = "checkbox", "Checkbox"
+    RADIO = "radio", "Radio"
+    ARRAY = "array", "Array"
+    LAB_REPORT = "labReport", "Lab Report"
+    REMOTE_FIELDS = "remoteFields", "Remote Fields"
+    AUTOCOMPLETE = "autocomplete", "Autocomplete"
+    DATE = "date", "Date"
+
+
+class LabReportTemplateQuerySet(BaseReportTemplateQuerySet):
+    """QuerySet for LabReportTemplate with custom filtering methods."""
+
+    def inactive(self) -> Self:
+        """Return templates that are inactive."""
+        return self.filter(active=False)
+
+    def search(self, query: str) -> Self:
+        """Search templates by name or search_keywords."""
+        if not query:
+            return self
+        return self.filter(Q(name__icontains=query) | Q(search_keywords__icontains=query))
+
+    def point_of_care(self) -> Self:
+        """Return Point of Care (POC) test templates."""
+        return self.filter(poc=True)
+
+
+class LabReportTemplate(BaseReportTemplate):
+    """A lab report template for POC labs and custom lab reports."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_data_integration_labreporttemplate_001"
+
+    objects = models.Manager.from_queryset(LabReportTemplateQuerySet)()
+
+    poc = models.BooleanField("Point of Care Test", default=False, db_index=True)
+
+
+class LabReportTemplateField(BaseReportTemplateField):
+    """A field definition within a lab report template."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_data_integration_labreporttemplatefield_001"
+
+    report_template = models.ForeignKey(
+        LabReportTemplate,
+        on_delete=models.DO_NOTHING,
+        related_name="fields",
+    )
+    type = models.CharField(
+        max_length=250,
+        choices=FieldType.choices,
+        default=FieldType.FLOAT,
+    )
+
+
+class LabReportTemplateFieldOption(BaseReportTemplateFieldOption):
+    """An option for a select/radio field in a lab report template."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_data_integration_labreporttemplatefieldopt_001"
+
+    field = models.ForeignKey(
+        LabReportTemplateField,
+        on_delete=models.DO_NOTHING,
+        related_name="options",
+    )
+
+
+class LabOrderActionEvent(BaseActionEvent):
+    """Event representing an action taken on a lab order, such as faxing it."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_laborderactionevent_001"
+
+    lab_order = models.ForeignKey(
+        "v1.LabOrder", on_delete=models.CASCADE, related_name="action_events"
+    )
+
+
+__exports__ = (
+    "TransmissionType",
+    "LabReport",
+    "LabReportRemark",
+    "LabReviewQuerySet",
+    "LabReview",
+    "LabValue",
+    "LabValueCoding",
+    "LabOrder",
+    "LabOrderReason",
+    "LabOrderReasonCondition",
+    "LabTest",
+    "LabPartner",
+    "LabPartnerTest",
+    "LabPartnerTestQuestion",
+    "LabPartnerTestQuestionChoice",
+    "FieldType",
+    "LabReportTemplate",
+    "LabReportTemplateField",
+    "LabReportTemplateFieldOption",
+    "LabReportTemplateQuerySet",
+    "LabOrderActionEvent",
+)

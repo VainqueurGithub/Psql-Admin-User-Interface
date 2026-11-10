@@ -1,0 +1,604 @@
+#!/usr/bin/env python
+from __future__ import annotations
+
+import os
+import ssl
+from collections import defaultdict
+from enum import Enum, auto, unique
+from functools import lru_cache
+from typing import TYPE_CHECKING, Any, Callable, DefaultDict, NamedTuple
+
+from .options import pyarrow as pa
+from .sf_dirs import _resolve_platform_dirs
+
+if TYPE_CHECKING:
+    from pyarrow import DataType
+
+    from .cursor import ResultMetadataV2
+
+# Snowflake's central platform dependent directories, if the folder
+# ~/.snowflake/ (customizable by the environment variable SNOWFLAKE_HOME) exists
+# we use that folder for everything. Otherwise, we fall back to platformdirs
+# defaults. Please see comments in sf_dir.py for more information.
+DIRS = _resolve_platform_dirs()
+
+# Snowflake's configuration files. By default, platformdirs will resolve
+# them to these places depending on OS:
+#   * Linux: `~/.config/snowflake/filename` but can be updated with XDG vars
+#   * Windows: `%USERPROFILE%\AppData\Local\snowflake\filename`
+#   * Mac: `~/Library/Application Support/snowflake/filename`
+CONNECTIONS_FILE = DIRS.user_config_path / "connections.toml"
+CONFIG_FILE = DIRS.user_config_path / "config.toml"
+
+DBAPI_TYPE_STRING = 0
+DBAPI_TYPE_BINARY = 1
+DBAPI_TYPE_NUMBER = 2
+DBAPI_TYPE_TIMESTAMP = 3
+
+_DEFAULT_HOSTNAME_TLD = "com"
+_CHINA_HOSTNAME_TLD = "cn"
+_GOV_HOSTNAME_TLD = "mil"
+_TOP_LEVEL_DOMAIN_REGEX = r"\.[a-zA-Z]{1,63}$"
+_SNOWFLAKE_HOST_SUFFIX_REGEX = r"snowflakecomputing(\.[a-zA-Z]{1,63}){1,2}$"
+# Recognized Snowflake host suffixes, used whenever a host is about to be turned
+# into the authority of a URL the connector builds itself (WORKLOAD_IDENTITY
+# attestation, OCSP cache-URL derivation). Unlike _SNOWFLAKE_HOST_SUFFIX_REGEX
+# (used for request tracing), matching against these suffixes is done on a label
+# boundary (the candidate host must equal a suffix or end in f".{suffix}"), and
+# the suffixes pin the TLD to the connector's supported Snowflake TLDs. Matching
+# is anchored to a label boundary at the end of the host, so only the listed
+# suffixes and their subdomains are recognized.
+# Allowed: snowflakecomputing.com, snowflakecomputing.cn, snowflakecomputing.mil
+# (BCAP/DoD), <subdomain>.snowflakecomputing.com (incl. privatelink), etc.
+# Matching helpers live in _host_util so every subsystem shares one rule.
+_SNOWFLAKE_ALLOWED_HOST_SUFFIXES = (
+    f"snowflakecomputing.{_DEFAULT_HOSTNAME_TLD}",
+    f"snowflakecomputing.{_CHINA_HOSTNAME_TLD}",
+    f"snowflakecomputing.{_GOV_HOSTNAME_TLD}",
+)
+
+_PARAM_USE_SCOPED_TEMP_FOR_PANDAS_TOOLS = "ENABLE_FIX_1375538"
+
+
+class FieldType(NamedTuple):
+    name: str
+    dbapi_type: list[int]
+    pa_type: Callable[[ResultMetadataV2], DataType]
+
+
+def vector_pa_type(metadata: ResultMetadataV2) -> DataType:
+    """
+    Generate the Arrow type represented by the given vector column metadata.
+    Vectors are represented as Arrow fixed-size lists.
+    """
+    assert (
+        metadata.fields is not None and len(metadata.fields) == 1
+    ), "Invalid result metadata for vector type: expected a single field to be defined"
+    assert (
+        metadata.vector_dimension or 0
+    ) > 0, "Invalid result metadata for vector type: expected a positive dimension"
+
+    field_type = FIELD_TYPES[metadata.fields[0].type_code]
+    return pa.list_(field_type.pa_type(metadata.fields[0]), metadata.vector_dimension)
+
+
+def array_pa_type(metadata: ResultMetadataV2) -> DataType:
+    """
+    Generate the Arrow type represented by the given array column metadata.
+    """
+    # If fields is missing then structured types are not enabled.
+    # Fallback to json encoded string
+    if metadata.fields is None:
+        return pa.string()
+
+    assert (
+        len(metadata.fields) == 1
+    ), "Invalid result metadata for array type: expected a single field to be defined"
+
+    field_type = FIELD_TYPES[metadata.fields[0].type_code]
+    return pa.list_(field_type.pa_type(metadata.fields[0]))
+
+
+def map_pa_type(metadata: ResultMetadataV2) -> DataType:
+    """
+    Generate the Arrow type represented by the given map column metadata.
+    """
+    # If fields is missing then structured types are not enabled.
+    # Fallback to json encoded string
+    if metadata.fields is None:
+        return pa.string()
+
+    assert (
+        len(metadata.fields or []) == 2
+    ), "Invalid result metadata for map type: expected a field for key and a field for value"
+    key_type = FIELD_TYPES[metadata.fields[0].type_code]
+    value_type = FIELD_TYPES[metadata.fields[1].type_code]
+    return pa.map_(
+        key_type.pa_type(metadata.fields[0]), value_type.pa_type(metadata.fields[1])
+    )
+
+
+def struct_pa_type(metadata: ResultMetadataV2) -> DataType:
+    """
+    Generate the Arrow type represented by the given struct column metadata.
+    """
+    # If fields is missing then structured types are not enabled.
+    # Fallback to json encoded string
+    if metadata.fields is None:
+        return pa.string()
+
+    assert all(
+        field.name is not None for field in metadata.fields
+    ), "All fields of a stuct type must have a name."
+    return pa.struct(
+        {
+            field.name: FIELD_TYPES[field.type_code].pa_type(field)
+            for field in metadata.fields
+        }
+    )
+
+
+# This type mapping holds column type definitions.
+#  Be careful to not change the ordering as the index is what Snowflake
+#  gives to as schema
+#
+# `name` is the SQL name of the type, `dbapi_type` is the set of corresponding
+# PEP 249 type objects, and `pa_type` is a lambda that takes in a column's
+# result metadata and returns the corresponding Arrow type.
+FIELD_TYPES: tuple[FieldType, ...] = (
+    FieldType(
+        name="FIXED", dbapi_type=[DBAPI_TYPE_NUMBER], pa_type=lambda _: pa.int64()
+    ),
+    FieldType(
+        name="REAL", dbapi_type=[DBAPI_TYPE_NUMBER], pa_type=lambda _: pa.float64()
+    ),
+    FieldType(
+        name="TEXT", dbapi_type=[DBAPI_TYPE_STRING], pa_type=lambda _: pa.string()
+    ),
+    FieldType(
+        name="DATE", dbapi_type=[DBAPI_TYPE_TIMESTAMP], pa_type=lambda _: pa.date64()
+    ),
+    FieldType(
+        name="TIMESTAMP",
+        dbapi_type=[DBAPI_TYPE_TIMESTAMP],
+        pa_type=lambda _: pa.time64("ns"),
+    ),
+    FieldType(
+        name="VARIANT", dbapi_type=[DBAPI_TYPE_BINARY], pa_type=lambda _: pa.string()
+    ),
+    FieldType(
+        name="TIMESTAMP_LTZ",
+        dbapi_type=[DBAPI_TYPE_TIMESTAMP],
+        pa_type=lambda _: pa.timestamp("ns"),
+    ),
+    FieldType(
+        name="TIMESTAMP_TZ",
+        dbapi_type=[DBAPI_TYPE_TIMESTAMP],
+        pa_type=lambda _: pa.timestamp("ns"),
+    ),
+    FieldType(
+        name="TIMESTAMP_NTZ",
+        dbapi_type=[DBAPI_TYPE_TIMESTAMP],
+        pa_type=lambda _: pa.timestamp("ns"),
+    ),
+    FieldType(name="OBJECT", dbapi_type=[DBAPI_TYPE_BINARY], pa_type=struct_pa_type),
+    FieldType(name="ARRAY", dbapi_type=[DBAPI_TYPE_BINARY], pa_type=array_pa_type),
+    FieldType(
+        name="BINARY", dbapi_type=[DBAPI_TYPE_BINARY], pa_type=lambda _: pa.binary()
+    ),
+    FieldType(
+        name="TIME",
+        dbapi_type=[DBAPI_TYPE_TIMESTAMP],
+        pa_type=lambda _: pa.time64("ns"),
+    ),
+    FieldType(name="BOOLEAN", dbapi_type=[], pa_type=lambda _: pa.bool_()),
+    FieldType(
+        name="GEOGRAPHY", dbapi_type=[DBAPI_TYPE_STRING], pa_type=lambda _: pa.string()
+    ),
+    FieldType(
+        name="GEOMETRY", dbapi_type=[DBAPI_TYPE_STRING], pa_type=lambda _: pa.string()
+    ),
+    FieldType(name="VECTOR", dbapi_type=[DBAPI_TYPE_BINARY], pa_type=vector_pa_type),
+    FieldType(name="MAP", dbapi_type=[DBAPI_TYPE_BINARY], pa_type=map_pa_type),
+    FieldType(
+        name="FILE", dbapi_type=[DBAPI_TYPE_STRING], pa_type=lambda _: pa.string()
+    ),
+    FieldType(
+        name="INTERVAL_YEAR_MONTH",
+        dbapi_type=[DBAPI_TYPE_NUMBER],
+        pa_type=lambda _: pa.int64(),
+    ),
+    FieldType(
+        name="INTERVAL_DAY_TIME",
+        dbapi_type=[DBAPI_TYPE_NUMBER],
+        pa_type=lambda _: pa.int64(),
+    ),
+)
+
+FIELD_NAME_TO_ID: DefaultDict[Any, int] = defaultdict(int)
+FIELD_ID_TO_NAME: DefaultDict[int, str] = defaultdict(str)
+
+__binary_types: list[int] = []
+__binary_type_names: list[str] = []
+__string_types: list[int] = []
+__string_type_names: list[str] = []
+__number_types: list[int] = []
+__number_type_names: list[str] = []
+__timestamp_types: list[int] = []
+__timestamp_type_names: list[str] = []
+
+for idx, field_type in enumerate(FIELD_TYPES):
+    FIELD_ID_TO_NAME[idx] = field_type.name
+    FIELD_NAME_TO_ID[field_type.name] = idx
+
+    dbapi_types = field_type.dbapi_type
+    for dbapi_type in dbapi_types:
+        if dbapi_type == DBAPI_TYPE_BINARY:
+            __binary_types.append(idx)
+            __binary_type_names.append(field_type.name)
+        elif dbapi_type == DBAPI_TYPE_TIMESTAMP:
+            __timestamp_types.append(idx)
+            __timestamp_type_names.append(field_type.name)
+        elif dbapi_type == DBAPI_TYPE_NUMBER:
+            __number_types.append(idx)
+            __number_type_names.append(field_type.name)
+        elif dbapi_type == DBAPI_TYPE_STRING:
+            __string_types.append(idx)
+            __string_type_names.append(field_type.name)
+
+
+def get_binary_types() -> list[int]:
+    return __binary_types
+
+
+def is_binary_type_name(type_name: str) -> bool:
+    return type_name in __binary_type_names
+
+
+def get_string_types() -> list[int]:
+    return __string_types
+
+
+def is_string_type_name(type_name) -> bool:
+    return type_name in __string_type_names
+
+
+def get_number_types() -> list[int]:
+    return __number_types
+
+
+def is_number_type_name(type_name) -> bool:
+    return type_name in __number_type_names
+
+
+def get_timestamp_types() -> list[int]:
+    return __timestamp_types
+
+
+def is_timestamp_type_name(type_name) -> bool:
+    return type_name in __timestamp_type_names
+
+
+def is_date_type_name(type_name) -> bool:
+    return type_name == "DATE"
+
+
+# Log format
+LOG_FORMAT = (
+    "%(asctime)s - %(filename)s:%(lineno)d - "
+    "%(funcName)s() - %(levelname)s - %(message)s"
+)
+
+# String literals
+UTF8 = "utf-8"
+SHA256_DIGEST = "sha256_digest"
+
+# PUT/GET related
+S3_FS = "S3"
+AZURE_FS = "AZURE"
+GCS_FS = "GCS"
+LOCAL_FS = "LOCAL_FS"
+CMD_TYPE_UPLOAD = "UPLOAD"
+CMD_TYPE_DOWNLOAD = "DOWNLOAD"
+FILE_PROTOCOL = "file://"
+
+
+@unique
+class ResultStatus(Enum):
+    ERROR = "ERROR"
+    SUCCEEDED = "SUCCEEDED"
+    UPLOADED = "UPLOADED"
+    DOWNLOADED = "DOWNLOADED"
+    COLLISION = "COLLISION"
+    SKIPPED = "SKIPPED"
+    RENEW_TOKEN = "RENEW_TOKEN"
+    RENEW_PRESIGNED_URL = "RENEW_PRESIGNED_URL"
+    NOT_FOUND_FILE = "NOT_FOUND_FILE"
+    NEED_RETRY = "NEED_RETRY"
+    NEED_RETRY_WITH_LOWER_CONCURRENCY = "NEED_RETRY_WITH_LOWER_CONCURRENCY"
+
+
+class SnowflakeS3FileEncryptionMaterial(NamedTuple):
+    query_id: str
+    query_stage_master_key: str
+    smk_id: int
+
+
+class MaterialDescriptor(NamedTuple):
+    smk_id: int
+    query_id: str
+    key_size: int
+
+
+class EncryptionMetadata(NamedTuple):
+    key: str
+    iv: str
+    matdesc: str
+
+
+class FileHeader(NamedTuple):
+    digest: str | None
+    content_length: int | None
+    encryption_metadata: EncryptionMetadata | None
+
+
+PARAMETER_AUTOCOMMIT = "AUTOCOMMIT"
+PARAMETER_CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY = (
+    "CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY"
+)
+PARAMETER_CLIENT_SESSION_KEEP_ALIVE = "CLIENT_SESSION_KEEP_ALIVE"
+PARAMETER_CLIENT_PREFETCH_THREADS = "CLIENT_PREFETCH_THREADS"
+PARAMETER_CLIENT_TELEMETRY_ENABLED = "CLIENT_TELEMETRY_ENABLED"
+PARAMETER_CLIENT_TELEMETRY_OOB_ENABLED = "CLIENT_OUT_OF_BAND_TELEMETRY_ENABLED"
+PARAMETER_CLIENT_STORE_TEMPORARY_CREDENTIAL = "CLIENT_STORE_TEMPORARY_CREDENTIAL"
+PARAMETER_CLIENT_REQUEST_MFA_TOKEN = "CLIENT_REQUEST_MFA_TOKEN"
+PARAMETER_CLIENT_USE_SECURE_STORAGE_FOR_TEMPORARY_CREDENTIAL = (
+    "CLIENT_USE_SECURE_STORAGE_FOR_TEMPORARY_CREDENTIAL"
+)
+PARAMETER_QUERY_CONTEXT_CACHE_SIZE = "QUERY_CONTEXT_CACHE_SIZE"
+PARAMETER_TIMEZONE = "TIMEZONE"
+PARAMETER_SERVICE_NAME = "SERVICE_NAME"
+PARAMETER_CLIENT_VALIDATE_DEFAULT_PARAMETERS = "CLIENT_VALIDATE_DEFAULT_PARAMETERS"
+PARAMETER_PYTHON_CONNECTOR_QUERY_RESULT_FORMAT = "PYTHON_CONNECTOR_QUERY_RESULT_FORMAT"
+PARAMETER_ENABLE_STAGE_S3_PRIVATELINK_FOR_US_EAST_1 = (
+    "ENABLE_STAGE_S3_PRIVATELINK_FOR_US_EAST_1"
+)
+PARAMETER_MULTI_STATEMENT_COUNT = "MULTI_STATEMENT_COUNT"
+
+HTTP_HEADER_CONTENT_TYPE = "Content-Type"
+HTTP_HEADER_CONTENT_ENCODING = "Content-Encoding"
+HTTP_HEADER_ACCEPT_ENCODING = "Accept-Encoding"
+HTTP_HEADER_ACCEPT = "accept"
+HTTP_HEADER_USER_AGENT = "User-Agent"
+HTTP_HEADER_SERVICE_NAME = "X-Snowflake-Service"
+
+HTTP_HEADER_VALUE_OCTET_STREAM = "application/octet-stream"
+
+# OCSP
+OCSP_ROOT_CERTS_DICT_LOCK_TIMEOUT_DEFAULT_NO_TIMEOUT: int = -1
+
+
+@unique
+class OCSPMode(Enum):
+    """OCSP Mode enumerator for all the available modes.
+
+    OCSP mode descriptions:
+        FAIL_CLOSED: If the client or driver does not receive a valid OCSP CA response for any reason,
+            the connection fails. Selected by setting ocsp_fail_open=False when disable is not true.
+        FAIL_OPEN: A response indicating a revoked certificate results in a failed connection. A response with any
+            other certificate errors or statuses allows the connection to occur, but denotes the message in the logs
+            at the WARNING level with the relevant details in JSON format. Selected by setting ocsp_fail_open=True
+            when disable is not true. disable_ocsp_checks=True (or insecure_mode=True) always
+            turns OCSP off, including when ocsp_fail_open is set. ocsp_fail_open=None
+            (the stored default) and disable_ocsp_checks=False / insecure_mode=False
+            are not an opt-in.
+        INSECURE (deprecated): The connection will occur anyway.
+        DISABLE_OCSP_CHECKS: The OCSP check will not happen. If the certificate is valid then connection will occur.
+            This is the default unless the user opts into OCSP.
+    """
+
+    FAIL_CLOSED = "FAIL_CLOSED"
+    FAIL_OPEN = "FAIL_OPEN"
+    INSECURE = "INSECURE"
+    DISABLE_OCSP_CHECKS = "DISABLE_OCSP_CHECKS"
+
+
+@unique
+class FileTransferType(Enum):
+    """This enum keeps track of the possible file transfer types."""
+
+    PUT = auto()
+    GET = auto()
+
+
+@unique
+class QueryStatus(Enum):
+    RUNNING = 0
+    ABORTING = 1
+    SUCCESS = 2
+    FAILED_WITH_ERROR = 3
+    ABORTED = 4
+    QUEUED = 5
+    FAILED_WITH_INCIDENT = 6
+    DISCONNECTED = 7
+    RESUMING_WAREHOUSE = 8
+    # purposeful typo. Is present in QueryDTO.java
+    QUEUED_REPARING_WAREHOUSE = 9
+    RESTARTED = 10
+    BLOCKED = 11
+    NO_DATA = 12
+
+
+# Size constants
+kilobyte = 1024
+megabyte = kilobyte * 1024
+gigabyte = megabyte * 1024
+
+
+# ArrowResultChunk constants the unit in this iterator
+# EMPTY_UNIT: default
+# ROW_UNIT: fetch row by row if the user call `fetchone()`
+# TABLE_UNIT: fetch one arrow table if the user call `fetch_pandas()`
+@unique
+class IterUnit(Enum):
+    ROW_UNIT = "row"
+    TABLE_UNIT = "table"
+
+
+# File Transfer
+# Amazon S3 multipart upload limits
+# https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
+S3_DEFAULT_CHUNK_SIZE = 8 * 1024**2
+S3_MAX_OBJECT_SIZE = 5 * 1024**4
+S3_MAX_PART_SIZE = 5 * 1024**3
+S3_MIN_PART_SIZE = 5 * 1024**2
+S3_MAX_PARTS = 10000
+
+S3_CHUNK_SIZE = 8388608  # boto3 default
+
+# Azure Block Blob multipart upload limits
+# https://learn.microsoft.com/en-us/rest/api/storageservices/understanding-block-blobs--append-blobs--and-page-blobs
+AZURE_CHUNK_SIZE = 8 * megabyte  # kept consistent with S3_DEFAULT_CHUNK_SIZE
+AZURE_MAX_BLOCKS = 50000
+AZURE_MAX_BLOCK_SIZE = 4000 * megabyte
+AZURE_MAX_OBJECT_SIZE = AZURE_MAX_BLOCKS * AZURE_MAX_BLOCK_SIZE
+
+# https://requests.readthedocs.io/en/latest/user/advanced/#timeouts
+REQUEST_CONNECTION_TIMEOUT = 10
+REQUEST_READ_TIMEOUT = 600
+
+DAY_IN_SECONDS = 60 * 60 * 24
+
+# TODO: all env variables definitions should be here
+ENV_VAR_PARTNER = "SF_PARTNER"
+ENV_VAR_TEST_MODE = "SNOWFLAKE_TEST_MODE"
+ENV_VAR_DISABLE_PLATFORM_DETECTION = "SNOWFLAKE_DISABLE_PLATFORM_DETECTION"
+ENV_VAR_ENABLE_CUSTOM_REVOCATION_ERRORS = "SNOWFLAKE_ENABLE_CUSTOM_REVOCATION_ERRORS"
+ENV_VAR_MIN_TLS_VERSION = "SNOWFLAKE_MIN_TLS_VERSION"
+ENV_VAR_TLS_CIPHERS = "SNOWFLAKE_TLS_CIPHERS"
+
+# Boolean positive values (lowercased) for environment variable checks
+ENV_VAR_BOOL_POSITIVE_VALUES_LOWERCASED = ["true"]
+
+# Floor applied when ENV_VAR_MIN_TLS_VERSION is unset. Matches urllib3's own
+# default (create_urllib3_context), so leaving the variable unset preserves the
+# connector's historical behavior exactly.
+DEFAULT_MIN_TLS_VERSION: ssl.TLSVersion = ssl.TLSVersion.TLSv1_2
+
+# Accepted spellings, matched case-insensitively after trimming. Deliberately the
+# same set the Go and JDBC drivers accept, so one value can be documented and
+# deployed across drivers unchanged.
+_MIN_TLS_VERSION_VALUES: dict[str, ssl.TLSVersion] = {
+    "1.2": ssl.TLSVersion.TLSv1_2,
+    "tlsv1.2": ssl.TLSVersion.TLSv1_2,
+    "1.3": ssl.TLSVersion.TLSv1_3,
+    "tlsv1.3": ssl.TLSVersion.TLSv1_3,
+}
+
+
+@lru_cache(maxsize=None)
+def _parse_min_tls_version(raw: str) -> ssl.TLSVersion:
+    """Parse a minimum-TLS-version string into an ``ssl.TLSVersion``.
+
+    Accepts ``1.2``, ``1.3``, ``TLSv1.2`` and ``TLSv1.3``, case-insensitively and
+    ignoring surrounding whitespace.
+
+    Raises:
+        ValueError: if the value is not a recognized TLS version. A minimum TLS
+            version is a security control, so an unrecognized value fails loudly
+            rather than silently falling back to a weaker floor.
+
+    Cached per distinct input string so that repeated handshakes don't re-parse.
+    """
+    parsed = _MIN_TLS_VERSION_VALUES.get(raw.strip().lower())
+    if parsed is None:
+        raise ValueError(
+            f"Invalid {ENV_VAR_MIN_TLS_VERSION} value {raw!r}. "
+            f"Supported values: {', '.join(sorted(_MIN_TLS_VERSION_VALUES))}."
+        )
+    return parsed
+
+
+def get_min_tls_version() -> ssl.TLSVersion:
+    """Return the process-wide minimum TLS version.
+
+    Read from ENV_VAR_MIN_TLS_VERSION on every call (so the value is not frozen
+    at import time), falling back to DEFAULT_MIN_TLS_VERSION when unset or empty.
+    """
+    raw = os.environ.get(ENV_VAR_MIN_TLS_VERSION, "").strip()
+    if not raw:
+        return DEFAULT_MIN_TLS_VERSION
+    return _parse_min_tls_version(raw)
+
+
+class TlsCipherPolicy(NamedTuple):
+    """Cipher names from ENV_VAR_TLS_CIPHERS, split by the protocol they apply to.
+
+    OpenSSL configures the two protocol generations through separate calls that do
+    not overlap: ``SSL_CTX_set_cipher_list`` governs TLS 1.2 and below, while TLS
+    1.3 suites are only reachable through ``SSL_CTX_set_ciphersuites``. Either side
+    may be empty, meaning "leave OpenSSL's defaults for that protocol alone".
+    """
+
+    tls12: str | None
+    """Colon-separated OpenSSL cipher list for TLS 1.2 and below."""
+    tls13: str | None
+    """Colon-separated TLS 1.3 suite names."""
+
+
+@lru_cache(maxsize=None)
+def _parse_tls_ciphers(raw: str) -> TlsCipherPolicy:
+    """Split a colon-separated cipher list into its TLS 1.2 and TLS 1.3 halves.
+
+    Routing is by name shape: every TLS 1.3 suite name begins with ``TLS_``
+    (``TLS_AES_256_GCM_SHA384``) and no OpenSSL cipher-list name does
+    (``ECDHE-RSA-AES256-GCM-SHA384``), so the two are unambiguous.
+
+    Names are passed to OpenSSL as given -- it owns the vocabulary and rejects
+    anything it does not recognize, so an IANA-style spelling of a TLS 1.2 cipher
+    fails loudly rather than being silently dropped.
+
+    Raises:
+        ValueError: if the value contains no cipher names at all.
+
+    Cached per distinct input string so that repeated handshakes don't re-parse.
+    """
+    names = [name.strip() for name in raw.split(":") if name.strip()]
+    if not names:
+        raise ValueError(
+            f"Invalid {ENV_VAR_TLS_CIPHERS} value {raw!r}: no cipher names found. "
+            f"Expected a colon-separated list, e.g. "
+            f"'TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256'."
+        )
+
+    tls13 = [name for name in names if name.startswith("TLS_")]
+    tls12 = [name for name in names if not name.startswith("TLS_")]
+    return TlsCipherPolicy(
+        tls12=":".join(tls12) if tls12 else None,
+        tls13=":".join(tls13) if tls13 else None,
+    )
+
+
+def get_tls_ciphers() -> TlsCipherPolicy | None:
+    """Return the process-wide cipher policy, or ``None`` when unconfigured.
+
+    Read from ENV_VAR_TLS_CIPHERS on every call, so the value is not frozen at
+    import time. ``None`` means OpenSSL's defaults apply unchanged.
+    """
+    raw = os.environ.get(ENV_VAR_TLS_CIPHERS, "").strip()
+    if not raw:
+        return None
+    return _parse_tls_ciphers(raw)
+
+
+_DOMAIN_NAME_MAP = {_DEFAULT_HOSTNAME_TLD: "GLOBAL", _CHINA_HOSTNAME_TLD: "CHINA"}
+
+_CONNECTIVITY_ERR_MSG = (
+    "Verify that the hostnames and port numbers in SYSTEM$ALLOWLIST are added to your firewall's allowed list."
+    "\nTo further troubleshoot your connection you may reference the following article: "
+    "https://docs.snowflake.com/en/user-guide/client-connectivity-troubleshooting/overview."
+)
+
+_OAUTH_DEFAULT_SCOPE = "session:role:{role}"
+OAUTH_TYPE_AUTHORIZATION_CODE = "oauth_authorization_code"
+OAUTH_TYPE_CLIENT_CREDENTIALS = "oauth_client_credentials"

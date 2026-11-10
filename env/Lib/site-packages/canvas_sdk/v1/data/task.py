@@ -1,0 +1,187 @@
+from typing import cast
+
+from django.contrib.postgres.fields import ArrayField
+from django.db import models
+
+from canvas_sdk.v1.data.base import (
+    AuditedModel,
+    CommittableModelManager,
+    CommittableQuerySet,
+    IdentifiableModel,
+    MetadataModel,
+    Model,
+    TimestampedModel,
+)
+from canvas_sdk.v1.data.common import ColorEnum, Origin
+
+
+class TaskType(models.TextChoices):
+    """Choices for task types."""
+
+    TASK = "T", "Task"
+    REMINDER = "R", "Reminder"
+
+
+class EventType(models.TextChoices):
+    """Choices for event types."""
+
+    EVENT_CHART_OPEN = "CHART_OPEN", "Chart Open"
+
+
+class TaskStatus(models.TextChoices):
+    """Choices for task statuses."""
+
+    COMPLETED = "COMPLETED", "Completed"
+    CLOSED = "CLOSED", "Closed"
+    OPEN = "OPEN", "Open"
+
+
+class TaskLabelModule(models.TextChoices):
+    """Choices for task label modules."""
+
+    CLAIMS = "claims", "Claims"
+    TASKS = "tasks", "Tasks"
+    APPOINTMENTS = "appointments", "Appointments"
+
+
+class TaskPriority(models.TextChoices):
+    """Choices for task priorities."""
+
+    STAT = "stat", "STAT"
+    URGENT = "urgent", "Urgent"
+    ROUTINE = "routine", "Routine"
+
+
+class Task(TimestampedModel, IdentifiableModel):
+    """Task."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_task_001"
+
+    creator = models.ForeignKey(
+        "v1.Staff", on_delete=models.DO_NOTHING, related_name="creator_tasks", null=True
+    )
+    assignee = models.ForeignKey(
+        "v1.Staff", on_delete=models.DO_NOTHING, related_name="assignee_tasks", null=True
+    )
+    team = models.ForeignKey("v1.Team", on_delete=models.SET_NULL, related_name="tasks", null=True)
+    patient = models.ForeignKey(
+        "v1.Patient", on_delete=models.DO_NOTHING, blank=True, related_name="tasks", null=True
+    )
+    task_type = models.CharField(choices=TaskType.choices, max_length=1)
+    tag = models.CharField(max_length=64)
+    title = models.TextField()
+    due = models.DateTimeField(null=True)
+    due_event = models.CharField(choices=EventType.choices, blank=True, max_length=16)
+    status = models.CharField(choices=TaskStatus.choices, max_length=9)
+    priority = models.CharField(choices=TaskPriority.choices, max_length=7, null=True, blank=True)
+
+
+class TaskComment(TimestampedModel, IdentifiableModel):
+    """TaskComment."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_taskcomment_001"
+
+    creator = models.ForeignKey(
+        "v1.Staff", on_delete=models.DO_NOTHING, related_name="comments", null=True
+    )
+    task = models.ForeignKey(Task, on_delete=models.DO_NOTHING, related_name="comments", null=True)
+    body = models.TextField()
+
+
+class TaskLabel(TimestampedModel, IdentifiableModel):
+    """TaskLabel."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_tasklabel_001"
+
+    tasks = models.ManyToManyField(Task, related_name="labels", through="TaskTaskLabel")  # type: ignore[var-annotated]
+    claims = models.ManyToManyField("v1.Claim", related_name="labels", through="v1.ClaimLabel")
+    appointments = models.ManyToManyField(
+        "v1.Appointment", related_name="labels", through="v1.AppointmentLabel"
+    )
+    position = models.IntegerField()
+    color = models.CharField(choices=ColorEnum.choices, max_length=50, blank=True, default="")
+    task_association = ArrayField(
+        models.CharField(choices=Origin.choices, max_length=32), blank=True, default=list
+    )
+    name = models.CharField(max_length=255)
+    active = models.BooleanField(default=True)
+    modules = ArrayField(
+        models.CharField(choices=TaskLabelModule.choices, max_length=32),
+        blank=True,
+        default=list,
+    )
+
+
+class TaskTaskLabel(Model):
+    """M2M for Task -> TaskLabels."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_tasktasklabel_001"
+
+    task_label = models.ForeignKey(TaskLabel, on_delete=models.DO_NOTHING, null=True)
+    task = models.ForeignKey(Task, on_delete=models.DO_NOTHING, null=True)
+
+
+class NoteTask(AuditedModel, IdentifiableModel):
+    """Note Task."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_notetask_001"
+
+    objects = cast(CommittableQuerySet, CommittableModelManager())
+
+    note = models.ForeignKey("v1.Note", on_delete=models.CASCADE, related_name="note_tasks")
+    assessment = models.ForeignKey(
+        "v1.Assessment", on_delete=models.DO_NOTHING, related_name="note_tasks", null=True
+    )
+    task = models.ForeignKey(Task, on_delete=models.SET_NULL, related_name="note_tasks", null=True)
+    patient = models.ForeignKey(
+        "v1.Patient",
+        on_delete=models.CASCADE,
+    )
+    original_title = models.TextField(blank=True, default="")
+    original_assignee = models.ForeignKey(
+        "v1.Staff",
+        on_delete=models.SET_NULL,
+        related_name="assignee_note_tasks",
+        null=True,
+    )
+    original_team = models.ForeignKey(
+        "v1.Team",
+        on_delete=models.SET_NULL,
+        related_name="note_tasks",
+        null=True,
+    )
+    original_role = models.ForeignKey(
+        "v1.CareTeamRole", related_name="+", on_delete=models.SET_NULL, null=True
+    )
+    original_due = models.DateTimeField(blank=True, null=True)
+
+    internal_comment = models.TextField(blank=True, default="")
+
+
+class TaskMetadata(MetadataModel):
+    """TaskMetadata."""
+
+    class Meta:
+        db_table = "canvas_sdk_data_api_taskmetadata_001"
+
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="metadata")
+
+
+__exports__ = (
+    "TaskType",
+    "EventType",
+    "NoteTask",
+    "TaskStatus",
+    "TaskLabelModule",
+    "TaskPriority",
+    "Task",
+    "TaskComment",
+    "TaskLabel",
+    "TaskTaskLabel",
+    "TaskMetadata",
+)
